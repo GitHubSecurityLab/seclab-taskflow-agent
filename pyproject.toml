@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling >= 1.26", "hatch-requirements-txt"]
+build-backend = "hatchling.build"
+
+[project]
+name = "seclab-taskflow-agent"
+version = "0.0.1"
+dynamic = ["dependencies"]
+authors = [
+  { name="Example Author", email="author@example.com" },
+]
+description = "A small example package"
+readme = "seclab_taskflow_agent/README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "MIT"
+license-files = ["seclab_taskflow_agent/LICEN[CS]E*"]
+
+[tool.hatch.metadata.hooks.requirements_txt]
+files = ["seclab_taskflow_agent/requirements.txt"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["seclab_taskflow_agent"]
+
+[project.urls]
+Homepage = "https://github.com/GitHubSecurityLab/seclab-taskflow-agent"
+Issues = "https://github.com/GitHubSecurityLab/seclab-taskflow-agent/issues"

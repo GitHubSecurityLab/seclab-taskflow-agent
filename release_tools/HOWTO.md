@@ -33,3 +33,68 @@ server_params:
   command: docker
   args: ["run", "--entrypoint", "python" "-i", "--rm", "ghcr.io/githubsecuritylab/seclab-taskflow-agent", "toolboxes/mcp_servers/echo/echo.py"]
 ```
+
+# How to test and release new PyPI package
+
+See [the packaging tutorial](https://packaging.python.org/en/latest/tutorials/packaging-projects/#namespace-packages).
+
+We need all the code to be in a separate directory to build it into a package, so we create a new dir and copy what is need for the build.
+
+For pacakges, only underscores are a allowed as legal python idnetifiers and not dashes, so we need to rename the folder.
+```bash
+mkdir taskflow-package
+cd taskflow-package
+git clone https://github.com/GitHubSecurityLab/seclab-taskflow-agent.git
+mv seclab-taskflow-agent seclab_taskflow_agent
+```
+
+Build instructions are in pyproject.toml, and we also need .gitignore to ignore the `venv`.
+```bash
+cp seclab_taskflow_agent/pyproject.toml pyproject.toml
+cp seclab_taskflow_agent/.gitignore .gitignore
+
+# Create a new python virtual env, activate it, and install the tools for the build.
+python -m venv venv
+source venv/bin/activate
+
+pip install --upgrade build
+pip install hatch-requirements-txt
+
+python -m build
+pip install --upgrade twine
+
+```
+
+This will create a `dist` directory with a tar.gz source distribution and whl built distribution.
+
+You can test if the package works without uploading it to PyPI by installing it with the whl. Use ` --force-reinstall` if you made a new version of the package. We use `pydantic_core` in the deps, which doesn't seem to work on some versions of macos due to Rust bindings.
+```bash
+pip install dist/seclab_taskflow_agent-0.0.1-py3-none-any.whl
+```
+
+Create an .env file with `COPILOT_TOKEN`, and run the package with:
+```bash
+python -m seclab_taskflow_agent -p assistant 'how do modems work'
+```
+
+To upload it to TestPyPI (you'll need [an account on testpypi and an API token](https://packaging.python.org/en/latest/tutorials/packaging-projects/#uploading-the-distribution-archives)). Note if you then try to download the package from TestPyPI and run it, it won't work, because TestPyPi does not have the dependencies that are required for seclab-taskflow-agent. New packages on TestPyPI are regularly cleared. Test it instead using the wheel, or by using PyPI.
+```bash
+python -m twine upload --repository testpypi dist/*
+```
+
+To upload it on PyPI (you'll need [an account on PyPI and an API token](https://packaging.python.org/en/latest/tutorials/packaging-projects/#uploading-the-distribution-archives)). Note you need to update pyproject.toml to a new (higher) version.
+```bash
+python -m twine upload dist/*
+```
+
+Create a fresh venv, and download the package:
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install seclab-taskflow-agent
+```
+
+Create an .env file with `COPILOT_TOKEN`, and run the package with:
+```bash
+python -m seclab_taskflow_agent -p assistant 'how do modems work'
+```
