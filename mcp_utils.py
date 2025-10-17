@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from mcp.types import CallToolResult, TextContent
 from agents.mcp import MCPServerStdio
 
-from env_utils import swap_env
+from .env_utils import swap_env
 
 DEFAULT_MCP_CLIENT_SESSION_TIMEOUT = 120
 

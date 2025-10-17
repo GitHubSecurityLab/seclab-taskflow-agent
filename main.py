@@ -11,7 +11,7 @@ import re
 import json
 import uuid
 
-from agent import DEFAULT_MODEL, TaskRunHooks, TaskAgentHooks
+from .agent import DEFAULT_MODEL, TaskRunHooks, TaskAgentHooks
 #from agents.run import DEFAULT_MAX_TURNS # XXX: this is 10, we need more than that
 from agents.exceptions import MaxTurnsExceeded, AgentsException
 from agents.agent import ModelSettings
@@ -22,21 +22,27 @@ from openai import BadRequestError, APITimeoutError, RateLimitError
 from openai.types.responses import ResponseTextDeltaEvent
 from typing import Any
 
-from shell_utils import shell_tool_call
-from mcp_utils import DEFAULT_MCP_CLIENT_SESSION_TIMEOUT, ReconnectingMCPServerStdio, AsyncDebugMCPServerStdio, MCPNamespaceWrap, mcp_client_params, mcp_system_prompt, StreamableMCPThread
-from render_utils import render_model_output, flush_async_output
-from env_utils import TmpEnv
-from yaml_parser import YamlParser
-from agent import TaskAgent
-from capi import list_tool_call_models
-from available_tools import AvailableTools
+from .shell_utils import shell_tool_call
+from .mcp_utils import DEFAULT_MCP_CLIENT_SESSION_TIMEOUT, ReconnectingMCPServerStdio, AsyncDebugMCPServerStdio, MCPNamespaceWrap, mcp_client_params, mcp_system_prompt, StreamableMCPThread
+from .render_utils import render_model_output, flush_async_output
+from .env_utils import TmpEnv
+from .yaml_parser import YamlParser
+from .agent import TaskAgent
+from .capi import list_tool_call_models
+from .available_tools import AvailableTools
 
 load_dotenv()
 
 # only model output or help message should go to stdout, everything else goes to log
 logging.getLogger('').setLevel(logging.NOTSET)
+
+# Create logs directory if it doesn't exist
+# This is needed when running the code as a package from any directory
+log_dir = os.path.join(os.getcwd(), 'logs')
+os.makedirs(log_dir, exist_ok=True)
+
 log_file_handler = RotatingFileHandler(
-    'logs/task_agent.log',
+    os.path.join(log_dir, 'task_agent.log'),
     maxBytes=1024*1024*10,
     backupCount=10)
 log_file_handler.setLevel(os.getenv('TASK_AGENT_LOGLEVEL', default='DEBUG'))

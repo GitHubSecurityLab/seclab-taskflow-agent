@@ -12,7 +12,7 @@ from agents.run import DEFAULT_MAX_TURNS
 from agents.run import RunHooks
 from agents import Agent, Runner, AgentHooks, RunHooks, result, function_tool, Tool, RunContextWrapper, TContext, OpenAIChatCompletionsModel, set_default_openai_client, set_default_openai_api, set_tracing_disabled
 
-from capi import COPILOT_INTEGRATION_ID, COPILOT_API_ENDPOINT
+from .capi import COPILOT_INTEGRATION_ID, COPILOT_API_ENDPOINT
 
 # grab our secrets from .env, this must be in .gitignore
 load_dotenv()
