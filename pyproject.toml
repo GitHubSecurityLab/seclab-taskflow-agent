@@ -7,9 +7,9 @@ name = "seclab-taskflow-agent"
 version = "0.0.1"
 dynamic = ["dependencies"]
 authors = [
-  { name="Example Author", email="author@example.com" },
+  { name="GitHub Security Lab", email="securitylab@github.com" },
 ]
-description = "A small example package"
+description = "A taskflow agent for the SecLab project, enabling secure and automated workflow execution."
 readme = "seclab_taskflow_agent/README.md"
 requires-python = ">=3.9"
 classifiers = [
