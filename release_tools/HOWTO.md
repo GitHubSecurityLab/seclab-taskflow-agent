@@ -40,7 +40,7 @@ See [the packaging tutorial](https://packaging.python.org/en/latest/tutorials/pa
 
 We need all the code to be in a separate directory to build it into a package, so we create a new dir and copy what is need for the build.
 
-For pacakges, only underscores are a allowed as legal python idnetifiers and not dashes, so we need to rename the folder.
+For packages, only underscores are allowed as legal python identifiers and not dashes, so we need to rename the folder.
 ```bash
 mkdir taskflow-package
 cd taskflow-package
