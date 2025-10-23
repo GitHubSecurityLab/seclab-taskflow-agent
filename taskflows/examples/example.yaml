@@ -1,6 +1,7 @@
 seclab-taskflow-agent:
-  type: taskflow
   version: 1
+  filetype: taskflow
+  filekey: GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example
 
 taskflow:
   - task:
@@ -12,8 +13,8 @@ taskflow:
       must_complete: true
       # taskflows can set a primary (first entry) and handoff (additional entries) agent
       agents:
-        - c_auditer
-        - fruit_expert
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/c_auditer
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/examples/fruit_expert
       user_prompt: |
         Store an example vulnerable C program that uses `strcpy` in the
         `vulnerable_c_example` memory key and explain why `strcpy`
@@ -34,13 +35,13 @@ taskflow:
       # this normally only has the memcache toolbox, but we extend it here with
       # the GHSA toolbox
       toolboxes:
-        - memcache
-        - codeql
+        - GitHubSecurityLab/seclab-taskflow-agent/toolboxes/memcache
+        - GitHubSecurityLab/seclab-taskflow-agent/toolboxes/codeql
   - task:
       must_complete: true
       model: gpt-4.1
       agents:
-        - c_auditer
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/c_auditer
       user_prompt: |
         Retrieve C code for security review from the `vulnerable_c_example`
         memory key and perform a review.
@@ -50,7 +51,7 @@ taskflow:
         MEMCACHE_STATE_DIR: "example_taskflow/"
         MEMCACHE_BACKEND: "dictionary_file"
       toolboxes:
-        - memcache
+        - GitHubSecurityLab/seclab-taskflow-agent/toolboxes/memcache
       # headless mode does not prompt for tool call confirms configured for a server
       # note: this will auto-allow, if you want control over potentially dangerous
       # tool calls, then you should NOT run a task in headless mode (default: false)
@@ -63,6 +64,6 @@ taskflow:
   - task:
       repeat_prompt: true
       agents:
-        - assistant
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/assistant
       user_prompt: |
         What kind of fruit is {{ RESULT }}?

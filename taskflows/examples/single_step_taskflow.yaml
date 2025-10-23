@@ -1,11 +1,12 @@
 seclab-taskflow-agent:
-  type: taskflow
   version: 1
+  filetype: taskflow
+  filekey: GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/single_step_taskflow
 
 taskflow:
   - task:
       model: gpt-4.1
       agents:
-        - assistant
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/assistant
       user_prompt: |
         Explain the plot of William Gibson's Neuromancer in a single paragraph.

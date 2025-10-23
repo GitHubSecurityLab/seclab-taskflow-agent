@@ -1,13 +1,14 @@
 seclab-taskflow-agent:
-  type: taskflow
   version: 1
+  filetype: taskflow
+  filekey: GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_repeat_prompt
 
 taskflow:
   - task:
       max_steps: 5
       must_complete: true
       agents:
-        - assistant
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/assistant
       user_prompt: |
         Store the json array [1, 2, 3] in memory under the
         `test_repeat_prompt` key as a json object, then retrieve
@@ -16,13 +17,13 @@ taskflow:
         MEMCACHE_STATE_DIR: "example_repeat_prompt_taskflow/"
         MEMCACHE_BACKEND: "dictionary_file"
       toolboxes:
-        - memcache
+        - GitHubSecurityLab/seclab-taskflow-agent/toolboxes/memcache
   - task:
       # if the last mcp tool result is iterable
       # repeat_prompt can iter those results
       must_complete: true
       repeat_prompt: true
       agents:
-        - assistant
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/assistant
       user_prompt: |
         What is the integer value of {{ RESULT }}?

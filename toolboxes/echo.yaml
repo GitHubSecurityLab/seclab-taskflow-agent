@@ -1,6 +1,7 @@
 seclab-taskflow-agent:
-  type: toolbox
   version: 1
+  filetype: toolbox
+  filekey: GitHubSecurityLab/seclab-taskflow-agent/toolboxes/echo
 
 server_params:
   kind: stdio

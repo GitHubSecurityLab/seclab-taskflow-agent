@@ -1,0 +1,57 @@
+name: Smoke test - run the examples to check for errors
+
+on:
+  issue_comment:
+    types: [created] # Add "smoke test" as a PR comment to trigger this workflow.
+
+permissions:
+  contents: read
+  pull-requests: write # For adding a reaction to the comment
+
+jobs:
+  Linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: branch-deploy
+        id: branch-deploy
+        uses: github/branch-deploy@48285b12b35e47e2dde0c27d2abb33daa846d98b # v11.0.0
+        with:
+          trigger: "smoke test"
+          reaction: "eyes"
+          stable_branch: "main"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Python venv
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          COPILOT_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+        run: |
+          source .venv/bin/activate
+          python main.py -p GitHubSecurityLab/seclab-taskflow-agent/personalities/assistant 'explain modems to me please'
+          python main.py -p GitHubSecurityLab/seclab-taskflow-agent/personalities/c_auditer 'explain modems to me please'
+          python main.py -p GitHubSecurityLab/seclab-taskflow-agent/personalities/examples/echo 'explain modems to me please'
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/CVE-2023-2283/CVE-2023-2283
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/echo
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_globals
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_inputs
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_large_list_result_iter
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_repeat_prompt
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_repeat_prompt_async
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_repeat_prompt_dictionary
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_reusable_prompt
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_reusable_taskflows
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_triage_taskflow
+          python main.py -t GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/single_step_taskflow

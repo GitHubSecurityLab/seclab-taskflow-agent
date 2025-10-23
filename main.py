@@ -10,6 +10,7 @@ from pprint import pprint, pformat
 import re
 import json
 import uuid
+import pathlib
 
 from .agent import DEFAULT_MODEL, TaskRunHooks, TaskAgentHooks
 #from agents.run import DEFAULT_MAX_TURNS # XXX: this is 10, we need more than that
@@ -23,7 +24,7 @@ from openai.types.responses import ResponseTextDeltaEvent
 from typing import Any
 
 from .shell_utils import shell_tool_call
-from .mcp_utils import DEFAULT_MCP_CLIENT_SESSION_TIMEOUT, ReconnectingMCPServerStdio, AsyncDebugMCPServerStdio, MCPNamespaceWrap, mcp_client_params, mcp_system_prompt, StreamableMCPThread
+from .mcp_utils import DEFAULT_MCP_CLIENT_SESSION_TIMEOUT, ReconnectingMCPServerStdio, AsyncDebugMCPServerStdio, MCPNamespaceWrap, mcp_client_params, mcp_system_prompt, StreamableMCPThread, compress_name
 from .render_utils import render_model_output, flush_async_output
 from .env_utils import TmpEnv
 from .yaml_parser import YamlParser
@@ -48,6 +49,11 @@ log_file_handler = RotatingFileHandler(
 log_file_handler.setLevel(os.getenv('TASK_AGENT_LOGLEVEL', default='DEBUG'))
 log_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 logging.getLogger('').addHandler(log_file_handler)
+
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.ERROR)  # log only ERROR and above to console
+console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+logging.getLogger('').addHandler(console_handler)
 
 DEFAULT_MAX_TURNS = 50
 RATE_LIMIT_BACKOFF = 5
@@ -261,7 +267,7 @@ async def deploy_task_agents(available_tools: AvailableTools,
         for handoff_agent in list(agents.keys())[1:]:
             handoffs.append(TaskAgent(
                 # XXX: name has to be descriptive for an effective handoff
-                name=handoff_agent,
+                name=compress_name(handoff_agent),
                 instructions=prompt_with_handoff_instructions(
                     mcp_system_prompt(
                         agents[handoff_agent]['personality'],
@@ -405,7 +411,7 @@ async def main(available_tools: AvailableTools,
     if p:
         personality = available_tools.personalities.get(p)
         if personality is None:
-            raise ValueError("No such personality!")
+            raise ValueError(f"No such personality: {p}")
 
         await deploy_task_agents(
             available_tools,
@@ -419,12 +425,27 @@ async def main(available_tools: AvailableTools,
 
         taskflow = available_tools.taskflows.get(t)
         if taskflow is None:
-            raise ValueError("No such taskflow!")
+            taskflow_list = '\n'.join(available_tools.taskflows.keys())
+            await render_model_output(
+                f"** 🤖❗ Input Error: No such taskflow: {t}. Available taskflows are:\n{taskflow_list}"
+            )
+            raise ValueError(f"No such taskflow: {t}")
 
         await render_model_output(f"** 🤖💪 Running Task Flow: {t}\n")
 
         # optional global vars available for the taskflow tasks
         global_variables = taskflow.get('globals', {})
+        model_config = taskflow.get('model_config', {})
+        model_keys = []
+        if model_config:
+            model_dict = available_tools.model_config.get(model_config, {})
+            if not model_dict:
+                raise ValueError(f"No such model config: {model_config}")
+            model_dict = model_dict.get('models', {})
+            if model_dict:
+                if not isinstance(model_dict, dict):
+                    raise ValueError(f"Models section of the model_config file {model_config} must be a dictionary")
+            model_keys = model_dict.keys() 
 
         for task in taskflow['taskflow']:
 
@@ -444,7 +465,9 @@ async def main(available_tools: AvailableTools,
                 for k,v in reusable_taskflow['taskflow'][0]['task'].items():
                     if k not in task_body:
                         task_body[k] = v
-
+            model = task_body.get('model', DEFAULT_MODEL)
+            if model in model_keys:
+                model = model_dict[model]
             # parse our taskflow grammar
             name = task_body.get('name', 'taskflow') # placeholder, not used yet
             description = task_body.get('description', 'taskflow') # placeholder not used yet
@@ -461,7 +484,6 @@ async def main(available_tools: AvailableTools,
             toolboxes_override = task_body.get('toolboxes', [])
             env = task_body.get('env', {})
             repeat_prompt = task_body.get('repeat_prompt', False)
-            model = task_body.get('model', DEFAULT_MODEL)
             # this will set Agent 'stop_on_first_tool' tool use behavior, which prevents output back to llm
             exclude_from_context = task_body.get('exclude_from_context', False)
             # this allows you to run repeated prompts concurrently with a limit
@@ -596,6 +618,7 @@ async def main(available_tools: AvailableTools,
                                     run_hooks=TaskRunHooks(
                                         on_tool_end=on_tool_end_hook,
                                         on_tool_start=on_tool_start_hook),
+                                    model = model,
                                     agent_hooks=TaskAgentHooks(
                                         on_handoff=on_handoff_hook))
                             return result
@@ -634,11 +657,13 @@ async def main(available_tools: AvailableTools,
                     break
 
 if __name__ == '__main__':
+    cwd = pathlib.Path.cwd()
     available_tools = AvailableTools(
-        YamlParser('personalities').get_yaml_dict() |
-        YamlParser('taskflows').get_yaml_dict() |
-        YamlParser('prompts').get_yaml_dict(dir_namespace=True) |
-        YamlParser('toolboxes').get_yaml_dict(recurse=True))
+        YamlParser(cwd).get_yaml_dict((cwd/'personalities').rglob('*')) |
+        YamlParser(cwd).get_yaml_dict((cwd/'taskflows').rglob('*')) |
+        YamlParser(cwd).get_yaml_dict((cwd/'prompts').rglob('*')) |
+        YamlParser(cwd).get_yaml_dict((cwd/'toolboxes').rglob('*')) |
+        YamlParser(cwd).get_yaml_dict((cwd/'configs').rglob('*')))
 
     p, t, l, user_prompt, help_msg = parse_prompt_args(available_tools)
 

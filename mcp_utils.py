@@ -9,6 +9,7 @@ import time
 import os
 import socket
 import signal
+import hashlib
 from urllib.parse import urlparse
 
 from mcp.types import CallToolResult, TextContent
@@ -17,6 +18,16 @@ from agents.mcp import MCPServerStdio
 from .env_utils import swap_env
 
 DEFAULT_MCP_CLIENT_SESSION_TIMEOUT = 120
+
+# The openai API complains if the name of a tool is longer than 64
+# chars. But we're encouraging people to use long descriptive
+# filekeys to avoid accidental collisions, so it's very easy to go
+# over the limit. So this function converts a name to a 12 character
+# hash.
+def compress_name(name):
+    m = hashlib.sha256()
+    m.update(name.encode('utf-8'))
+    return m.hexdigest()[:12]
 
 # A process management class for running in-process MCP streamable servers
 class StreamableMCPThread(Thread):
@@ -221,7 +232,7 @@ class MCPNamespaceWrap:
     def __init__(self, confirms, obj):
         self.confirms = confirms
         self._obj = obj
-        self.namespace = f"{obj.name.upper().replace(' ', '_')}_"
+        self.namespace = compress_name(obj.name)
 
     def __getattr__(self, name):
         attr = getattr(self._obj, name)

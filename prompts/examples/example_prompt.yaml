@@ -1,6 +1,7 @@
 seclab-taskflow-agent:
-  type: prompt
   version: 1
+  filetype: prompt
+  filekey: GitHubSecurityLab/seclab-taskflow-agent/prompts/examples/example_prompt
 
 prompt: |
   Tell me more about bananas as well.

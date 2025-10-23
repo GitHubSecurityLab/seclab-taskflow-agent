@@ -1,40 +1,41 @@
 # a simple example of the triage Agent pattern
 seclab-taskflow-agent:
-  type: taskflow
   version: 1
+  filetype: taskflow
+  filekey: GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_triage_taskflow
 
 taskflow:
   - task:
       must_complete: true
       agents:
-        - assistant
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/assistant
       user_prompt: |
         Store the json array ["apples", "oranges", "bananas"] in the `fruits` memory key.
       env:
         MEMCACHE_STATE_DIR: "example_taskflow/"
         MEMCACHE_BACKEND: "dictionary_file"
       toolboxes:
-        - memcache
+        - GitHubSecurityLab/seclab-taskflow-agent/toolboxes/memcache
   - task:
       must_complete: true
       agents:
-        - assistant
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/assistant
       user_prompt: |
         Retrieve the contents of the `fruits` memory key.
       env:
         MEMCACHE_STATE_DIR: "example_taskflow/"
         MEMCACHE_BACKEND: "dictionary_file"
       toolboxes:
-        - memcache
+        - GitHubSecurityLab/seclab-taskflow-agent/toolboxes/memcache
   - task:
       model: gpt-4.1
       repeat_prompt: true
       agents:
         # primary agent for this task
-        - example_triage_agent
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/examples/example_triage_agent
         # handoff agents
-        - apple_expert
-        - orange_expert
-        - banana_expert
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/examples/apple_expert
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/examples/orange_expert
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/examples/banana_expert
       user_prompt: |
         Tell me more about how {{ RESULT }} are grown.

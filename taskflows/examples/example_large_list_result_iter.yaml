@@ -1,24 +1,25 @@
 seclab-taskflow-agent:
-  type: taskflow
   version: 1
+  filetype: taskflow
+  filekey: GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_large_list_result_iter
 
 taskflow:
   - task:
       exclude_from_context: true
       must_complete: true
       agents:
-        - assistant
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/assistant
       user_prompt: |
         Fetch all the open pull requests from `github/codeql` github repository. 
         You do not need to provide a summary of the results.
       toolboxes:
-        - github_official
+        - GitHubSecurityLab/seclab-taskflow-agent/toolboxes/github_official
       env:
         GITHUB_MCP_TOOLSETS: pull_requests
   - task:
       must_complete: true
       repeat_prompt: true
       agents:
-        - assistant
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/assistant
       user_prompt: |
         Echo this:  The title is {{ RESULT_title }} and the url is {{ RESULT_url }}.

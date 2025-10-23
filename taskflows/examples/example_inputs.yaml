@@ -1,11 +1,12 @@
 seclab-taskflow-agent:
-  type: taskflow
   version: 1
+  filetype: taskflow
+  filekey: GitHubSecurityLab/seclab-taskflow-agent/taskflows/examples/example_inputs
 
 taskflow:
   - task:
       agents:
-        - fruit_expert
+        - GitHubSecurityLab/seclab-taskflow-agent/personalities/examples/fruit_expert
       inputs:
         fruit: apples
       user_prompt: |

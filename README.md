@@ -47,7 +47,7 @@ Example:
 COPILOT_TOKEN=<your_github_token>
 # MCP configs
 GITHUB_PERSONAL_ACCESS_TOKEN=<your_github_token>
-CODEQL_DBS_BASE_PATH="/app/my_data/"
+CODEQL_DBS_BASE_PATH="/app/my_data/codeql_databases"
 ```
 
 ## Deploying from Source
@@ -110,7 +110,7 @@ MY_TASKFLOWS=~/my_taskflows docker/run.sh -t custom_taskflow
 Example: deploying a custom taskflow (custom_taskflow.yaml) and making local CodeQL databases available to the CodeQL MCP server:
 
 ```sh
-MY_TASKFLOWS=~/my_taskflows MY_DATA=~/codeql_databases CODEQL_DBS_BASE_PATH=/app/my_data docker/run.sh -t custom_taskflow
+MY_TASKFLOWS=~/my_taskflows MY_DATA=~/app/my_data CODEQL_DBS_BASE_PATH=/app/my_data/codeql_databases docker/run.sh -t custom_taskflow
 ```
 
 For more advanced scenarios like e.g. making custom MCP server code available, you can alter the run script to mount your custom code into the image and configure your toolboxes to use said code accordingly.
@@ -149,6 +149,11 @@ Example:
 
 ```yaml
 # personalities define the system prompt level directives for this Agent
+seclab-taskflow-agent:
+  version: 1
+  filetype: personality
+  filekey: personalities/examples/echo
+
 personality: |
   You are a simple echo bot. You use echo tools to echo things.
 
@@ -157,7 +162,7 @@ task: |
 
 # personality toolboxes map to mcp servers made available to this Agent
 toolboxes:
-  - echo
+  - toolboxes/echo
 ```
 
 ## Toolboxes
@@ -168,6 +173,11 @@ Example stdio config:
 
 ```yaml
 # stdio mcp server configuration
+seclab-taskflow-agent:
+  version: 1
+  filetype: toolbox
+  filekey: toolboxes/echo
+
 server_params:
   kind: stdio
   command: python
@@ -184,6 +194,11 @@ A sequence of interdependent tasks performed by a set of Agents. Configured thro
 Example:
 
 ```yaml
+seclab-taskflow-agent:
+  version: 1
+  filetype: taskflow
+  filekey: taskflows/examples/example.yaml
+
 taskflow:
   - task:
       # taskflows can optionally choose any of the support CAPI models for a task
@@ -194,17 +209,13 @@ taskflow:
       must_complete: true
       # taskflows can set a primary (first entry) and handoff (additional entries) agent
       agents:
-        - c_auditer
-        - fruit_expert
+        - personalities/c_auditer.yaml
+        - personalities/examples/fruit_expert.yaml
       user_prompt: |
         Store an example vulnerable C program that uses `strcpy` in the
         `vulnerable_c_example` memory key and explain why `strcpy`
         is insecure in the C programming language. Do this before handing off
         to any other agent.
-
-        Then provide a summary of a high impact CVE ID that involved a `strcpy`
-        based buffer overflow based on your GHSA knowledge as an additional
-        example.
 
         Finally, why are apples and oranges healthy to eat?
 
@@ -217,16 +228,16 @@ taskflow:
         MEMCACHE_STATE_DIR: "example_taskflow/"
         MEMCACHE_BACKEND: "dictionary_file"
       # taskflows can optionally override personality toolboxes, in this example
-      # kevin normally only has the memcache toolbox, but we extend it here with
+      # this normally only has the memcache toolbox, but we extend it here with
       # the GHSA toolbox
       toolboxes:
-        - ghsa
-        - memcache
+        - toolboxes/memcache.yaml
+        - toolboxes/codeql.yaml
   - task:
       must_complete: true
       model: gpt-4.1
       agents:
-        - c_auditer
+        - personalities/c_auditer.yaml
       user_prompt: |
         Retrieve C code for security review from the `vulnerable_c_example`
         memory key and perform a review.
@@ -236,12 +247,57 @@ taskflow:
         MEMCACHE_STATE_DIR: "example_taskflow/"
         MEMCACHE_BACKEND: "dictionary_file"
       toolboxes:
-        - memcache
+        - toolboxes/memcache.yaml
+      # headless mode does not prompt for tool call confirms configured for a server
+      # note: this will auto-allow, if you want control over potentially dangerous
+      # tool calls, then you should NOT run a task in headless mode (default: false)
+      headless: true
+  - task:
+      # tasks can also run shell scripts that return e.g. json output for repeat prompt iterable
+      must_complete: true
+      run: |
+        echo '["apple", "banana", "orange"]'
+  - task:
+      repeat_prompt: true
+      agents:
+        - personalities/assistant.yaml
+      user_prompt: |
+        What kind of fruit is {{ RESULT }}?
 ```
 
 Taskflows support [Agent handoffs](https://openai.github.io/openai-agents-python/handoffs/). Handoffs are useful for implementing triage patterns where the primary Agent can decide to handoff a task to any subsequent Agents in the `Agents` list.
 
 See the [taskflow examples](taskflows/examples) for other useful Taskflow patterns such as repeatable and asynchronous templated prompts.
+
+## Notes about the yaml syntax
+
+Every personality, toolbox, and taskflow is defined by a YAML file, which
+should always include a header like this:
+
+```
+seclab-taskflow-agent:
+  version: 1
+  filetype: taskflow
+  filekey: taskflows/examples/example
+```
+
+The "filetype" determines whether the file defines a personality, toolbox, or
+taskflow. This means that different types of files can be stored in the same directory.
+
+The "filekey" is a unique name for the file. It is used to allow
+cross-referencing between files. For example, a taskflow can reference
+a personality by its filekey. Because filekeys are used for
+cross-referencing (rather than file paths), it means that you can move
+a file to a different directory without breaking the links. This also
+means that you can easily import new files by dropping them into a sub-directory.
+We recommend including something like your
+GitHub "username/reponame" in your filekeys to make them globably unique.
+
+The "version" number in the header should always be 1. It means that the
+file uses version 1 of the seclab-taskflow-agent syntax. If we ever need
+to make a major change to the syntax, then we'll update the version number.
+This will hopefully enable us to make changes without breaking backwards
+compatibility.
 
 ## License
 
