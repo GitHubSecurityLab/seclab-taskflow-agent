@@ -1,7 +1,7 @@
 ## Contributing
 
-[fork]: https://github.com/githubsecuritylab/seclab-taskflow-agent/fork
-[pr]: https://github.com/githubsecuritylab/seclab=-taskflow-agent/compare
+[fork]: https://github.com/GitHubSecurityLab/seclab-taskflow-agent/fork
+[pr]: https://github.com/GitHubSecurityLab/seclab-taskflow-agent/compare
 [style]: https://github.com/styleguide/python
 
 Hi there! We're thrilled that you'd like to contribute to this project. Your help is essential for keeping it great.
