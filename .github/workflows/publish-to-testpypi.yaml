@@ -2,26 +2,18 @@ name: Publish to TestPyPI
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version name for release'
-        required: true
 
 jobs:
   publish:
     name: Publish wheel to TestPyPI
-    runs-on: ubuntu-latest
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/p/seclab-taskflow-agent2
     permissions:
       contents: write
       id-token: write  # For trusted publishing
-    uses: .github/workflows/publish-reusable.yml@main
+    uses: ./.github/workflows/publish-reusable.yml
     with:
-      version: ${{ inputs.version }}
       release_notes: ${{ github.head_ref }}
       repository_url: https://test.pypi.org/legacy/
-      environment: testpypi
+      environment_name: testpypi
+      environment_url: https://test.pypi.org/p/seclab-taskflow-agent2
     secrets:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

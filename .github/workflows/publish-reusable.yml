@@ -3,10 +3,6 @@ name: Publish (reusable workflow)
 on:
   workflow_call:
     inputs:
-      version:
-        description: 'Version number or tag for the release. For example: v1.0.1'
-        required: true
-        type: string
       release_notes:
         description: 'Release notes'
         required: true
@@ -16,7 +12,11 @@ on:
         required: true
         type: string
       environment_name:
-        description: 'Name of environment that specifies PyPI/TestPyPI url'
+        description: 'Name for PyPI/TestPyPI environment'
+        type: string
+        required: true
+      environment_url:
+        description: 'URL for PyPI/TestPyPI environment'
         type: string
         required: true
     secrets:
@@ -31,10 +31,13 @@ jobs:
   publish:
     name: Build
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment_name }}
+    environment:
+      name: ${{ inputs.environment_name }}
+      url: ${{ inputs.environment_url }}
     env:
       GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
       GITHUB_REPO: ${{ github.repository }}
+      GITHUB_REFNAME: ${{ github.ref_name }}
 
     steps:
     - name: Checkout repository
@@ -73,11 +76,8 @@ jobs:
 
     - name: Create GitHub Release
       env:
-        VERSION: ${{ inputs.version }}
         NOTES: ${{ inputs.release_notes }}
-      run: gh release create $VERSION --repo $GITHUB_REPO --notes $NOTES
+      run: gh release create $GITHUB_REFNAME --repo $GITHUB_REPO --notes $NOTES
 
     - name: Upload GitHub Release
-      env:
-        VERSION: ${{ inputs.version }}
-      run: gh release upload $VERSION dist/** --repo $GITHUB_REPO
+      run: gh release upload $GITHUB_REFNAME dist/** --repo $GITHUB_REPO
