@@ -10,10 +10,6 @@ on:
 jobs:
   publish:
     name: Publish wheel to TestPyPI
-    runs-on: ubuntu-latest
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/p/seclab-taskflow-agent2
     permissions:
       contents: write
       id-token: write  # For trusted publishing
@@ -22,6 +18,6 @@ jobs:
       version: ${{ inputs.version }}
       release_notes: ${{ github.head_ref }}
       repository_url: https://test.pypi.org/legacy/
-      environment: testpypi
+      environment: '{"name": "testpypi", "url": "https://test.pypi.org/p/seclab-taskflow-agent2"}'
     secrets:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
