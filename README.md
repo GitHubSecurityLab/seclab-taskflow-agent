@@ -63,9 +63,6 @@ pip install hatch
 hatch build
 ```
 
-python -m pip install -r requirements.txt
-```
-
 Then run `hatch run main`.
 
 Example: deploying a prompt to an Agent Personality:

@@ -11,7 +11,8 @@ python3 -m venv .venv
 echo "📥 Installing Python dependencies..."
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install hatch
+hatch build
 
 # If running in Codespaces, check for necessary secrets and print error if missing
 if [ -n "$CODESPACES" ]; then
