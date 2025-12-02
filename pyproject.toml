@@ -106,7 +106,7 @@ dependencies = [
   "ujson==5.10.0",
   "urllib3==2.5.0",
   "uvicorn==0.35.0",
-  "Werkzeug==3.1.1",
+  "Werkzeug==3.1.4",
   "zipp==3.23.0",
 ]
 
