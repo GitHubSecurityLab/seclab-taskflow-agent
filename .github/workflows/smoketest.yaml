@@ -33,7 +33,7 @@ jobs:
         env:
           BRANCH_DEPLOY_RESULT: ${{ steps.branch-deploy.outputs.continue }}
         run: |
-          # Make the job stop with an error if branch-deploy didn't return "true".
+          # Stop the job with an error if branch-deploy didn't return "true".
           echo "Branch Deploy result: $BRANCH_DEPLOY_RESULT"
           if [ "$BRANCH_DEPLOY_RESULT" != "true" ] ; then
             echo "Branch Deploy didn't return true. Aborting the job."
