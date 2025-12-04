@@ -14,14 +14,12 @@ permissions:
   statuses: read # Required for checking if all commit statuses are "success" in order to deploy the PR
 
 jobs:
-  permission-check:
+  Linux:
     runs-on: ubuntu-latest
     environment: smoketest
     if: github.event.issue.pull_request  # Make sure the comment is on a PR
-    outputs:
-      allowed: ${{ steps.branch-deploy.outputs.continue }}
     steps:
-      - name: branch-deploy
+      - name: Branch Deploy
         id: branch-deploy
         uses: github/branch-deploy@48285b12b35e47e2dde0c27d2abb33daa846d98b # v11.0.0
         with:
@@ -31,12 +29,16 @@ jobs:
           stable_branch: "main"
           update_branch: "disabled"
 
-  run-tests:
-    runs-on: ubuntu-latest
-    environment: smoketest
-    needs: permission-check
-    if: needs.permission-check.outputs.allowed == 'true'
-    steps:
+      - name: Check branch-deploy result
+        env:
+          BRANCH_DEPLOY_RESULT: ${{ steps.branch-deploy.outputs.continue }}
+        run: |
+          # Make the job stop with an error if branch-deploy didn't return "true".
+          if [ "$BRANCH_DEPLOY_RESULT" != "true" ] ; then
+            echo "Branch Deploy didn't return true. Aborting the job."
+            exit 1
+          fi
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
