@@ -46,13 +46,16 @@ def get_AI_endpoint():
 def get_AI_token():
     """
     Get the token for the AI API from the environment.
-    The environment variable can be named either AI_API_TOKEN
-    or COPILOT_TOKEN.
+    The environment variable can be named either AI_API_TOKEN,
+    COPILOT_TOKEN, or GITHUB_TOKEN.
     """
     token = os.getenv("AI_API_TOKEN")
     if token:
         return token
     token = os.getenv("COPILOT_TOKEN")
+    if token:
+        return token
+    token = os.getenv("GITHUB_TOKEN")
     if token:
         return token
     raise RuntimeError("AI_API_TOKEN environment variable is not set.")
