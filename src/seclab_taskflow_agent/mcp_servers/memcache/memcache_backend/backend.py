@@ -26,3 +26,9 @@ class Backend:
     def snapshot_state(self) -> dict[str, Any]:
         """Return all keys with their merged values as a dict. Safe to call externally."""
         return {}
+
+    def append_log(self, key: str, entry: Any) -> str:
+        pass
+
+    def get_log(self, key: str) -> list:
+        pass

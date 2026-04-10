@@ -29,7 +29,7 @@ class SqliteBackend(Backend):
             kv = KeyValue(key=key, value=json.dumps(value))
             session.add(kv)
             session.commit()
-        return 'f"Stored value in memory for `{key}`"'
+        return f"Stored value in memory for `{key}`"
 
     def get_state(self, key: str) -> Any:
         with Session(self.engine) as session:
@@ -93,8 +93,26 @@ class SqliteBackend(Backend):
             keys = [k[0] for k in session.query(KeyValue.key).distinct().all()]
         result = {}
         for k in keys:
-            if k.startswith("_log:") and hasattr(self, "get_log"):
+            if k.startswith("_log:"):
                 result[k] = self.get_log(k.removeprefix("_log:"))
             else:
                 result[k] = self.get_state(k)
         return result
+
+    def append_log(self, key: str, entry: Any) -> str:
+        from datetime import datetime, timezone
+
+        log_key = f"_log:{key}"
+        wrapped = {"_ts": datetime.now(timezone.utc).isoformat(), "data": entry}
+        with Session(self.engine) as session:
+            kv = KeyValue(key=log_key, value=json.dumps(wrapped))
+            session.add(kv)
+            session.commit()
+        return f"Appended entry to log '{log_key}'"
+
+    def get_log(self, key: str) -> list[dict]:
+        """Retrieve all log entries for a key as a flat list."""
+        log_key = f"_log:{key}"
+        with Session(self.engine) as session:
+            rows = session.query(KeyValue).filter_by(key=log_key).order_by(KeyValue.id).all()
+        return [json.loads(row.value) for row in rows]

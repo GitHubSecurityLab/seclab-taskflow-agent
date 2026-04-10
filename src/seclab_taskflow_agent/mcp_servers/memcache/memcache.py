@@ -76,5 +76,22 @@ def memcache_clear_cache():
     return backend.clear_cache()
 
 
+@mcp.tool()
+def memcache_append_log(key: str, entry: Any) -> str:
+    """Append a timestamped entry to an append-only log under the given key.
+    Use this for findings or notes that should accumulate, not be replaced.
+    Retrieve entries with memcache_get_log(key)."""
+    return backend.append_log(key, entry)
+
+
+@mcp.tool()
+def memcache_get_log(key: str) -> str:
+    """Retrieve all entries from an append-only log created by memcache_append_log."""
+    import json as _json
+
+    entries = backend.get_log(key)
+    return _json.dumps(entries, indent=2)
+
+
 if __name__ == "__main__":
     mcp.run(show_banner=False)

@@ -118,3 +118,25 @@ class MemcacheDictionaryFileBackend(Backend):
 
         self._inflate_memory()
         return copy.deepcopy(self.memcache)
+
+    def append_log(self, key: str, entry: Any) -> str:
+        from datetime import datetime, timezone
+
+        log_key = f"_log:{key}"
+        wrapped = {"_ts": datetime.now(timezone.utc).isoformat(), "data": entry}
+
+        @self.with_memory
+        def _append(k, v):
+            existing = self.memcache.get(k)
+            if isinstance(existing, list):
+                existing.append(v)
+            else:
+                self.memcache[k] = [v]
+            return f"Appended entry to log '{k}'"
+        return _append(log_key, wrapped)
+
+    def get_log(self, key: str) -> list[dict]:
+        log_key = f"_log:{key}"
+        self._inflate_memory()
+        val = self.memcache.get(log_key, [])
+        return val if isinstance(val, list) else [val]
