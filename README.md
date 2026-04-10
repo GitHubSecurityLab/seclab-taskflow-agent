@@ -430,6 +430,13 @@ confirm:
   - memcache_clear_cache
 ```
 
+### Append-only logs
+
+`memcache_append_log(key, entry)` appends a timestamped entry to an append-only
+log. Use this instead of `memcache_set_state` when accumulating findings or
+notes that should never be overwritten. Retrieve all entries with
+`memcache_get_log(key)`.
+
 ## Taskflows
 
 A sequence of interdependent tasks performed by a set of Agents. Configured through YAML files of `filetype` `taskflow`.
