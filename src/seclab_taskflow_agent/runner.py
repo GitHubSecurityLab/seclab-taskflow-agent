@@ -64,7 +64,7 @@ def write_auto_save(
     tool_name: str,
     result: str,
 ) -> None:
-    """Append tool result to auto-save log (NDJSON, append-only, crash-safe)."""
+    """Append tool result to auto-save log (NDJSON, append-only)."""
     try:
         os.makedirs(auto_save_dir, exist_ok=True)
         save_path = os.path.join(auto_save_dir, AUTO_SAVE_LOG_NAME)
@@ -73,7 +73,7 @@ def write_auto_save(
             "tool": tool_name,
             "result_preview": (result or "")[:2000],
         })
-        with open(save_path, "a") as f:
+        with open(save_path, "a", encoding="utf-8") as f:
             f.write(entry + "\n")
     except Exception as e:
         logging.warning(f"Auto-save failed: {e}")
@@ -87,7 +87,7 @@ def read_tool_log(auto_save_dir: str) -> list[dict]:
     try:
         path = os.path.join(auto_save_dir, AUTO_SAVE_LOG_NAME)
         if os.path.exists(path):
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -517,7 +517,11 @@ async def run_main(
     # Disabled by default (interval=0).  Set AUTO_SAVE_DIR and
     # AUTO_SAVE_INTERVAL to enable.
     _tool_call_counter = [0]
-    _auto_save_interval = int(os.getenv("AUTO_SAVE_INTERVAL", "0"))
+    try:
+        _auto_save_interval = int(os.getenv("AUTO_SAVE_INTERVAL", "0"))
+    except ValueError:
+        logging.warning("Invalid AUTO_SAVE_INTERVAL value, defaulting to 0 (disabled)")
+        _auto_save_interval = 0
     _auto_save_dir = os.getenv("AUTO_SAVE_DIR", "")
 
     async def on_tool_end_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool, result: str) -> None:
