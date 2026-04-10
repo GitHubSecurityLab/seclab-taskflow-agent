@@ -687,11 +687,14 @@ async def run_main(
 
             # Configure loop detection for this task
             task_loop_val = getattr(task, "max_consecutive_same_tool", None)
-            _loop_threshold[0] = (
-                task_loop_val
-                if task_loop_val is not None
-                else int(os.getenv("LOOP_MAX_CONSECUTIVE", "0"))
-            )
+            if task_loop_val is not None:
+                _loop_threshold[0] = task_loop_val
+            else:
+                try:
+                    _loop_threshold[0] = int(os.getenv("LOOP_MAX_CONSECUTIVE", "0"))
+                except ValueError:
+                    logging.warning("Invalid LOOP_MAX_CONSECUTIVE value, defaulting to 0 (disabled)")
+                    _loop_threshold[0] = 0
             _loop_is_async[0] = async_task
 
             # Render prompt template (skip if repeat_prompt — result not yet available)
