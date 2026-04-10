@@ -12,6 +12,7 @@ from __future__ import annotations
 
 __all__ = [
     "DEFAULT_MAX_TURNS",
+    "LoopDetectedError",
     "MAX_API_RETRY",
     "MAX_RATE_LIMIT_BACKOFF",
     "RATE_LIMIT_BACKOFF",
@@ -97,6 +98,15 @@ def read_tool_log(auto_save_dir: str) -> list[dict]:
     except Exception:
         logging.debug("Failed to read auto-save tool log", exc_info=True)
     return entries
+
+
+class LoopDetectedError(Exception):
+    """Raised when the agent enters a repetitive tool-call loop."""
+
+    def __init__(self, message: str, tool_name: str, count: int):
+        super().__init__(message)
+        self.tool_name = tool_name
+        self.count = count
 
 
 def _resolve_model_config(
@@ -524,11 +534,33 @@ async def run_main(
         _auto_save_interval = 0
     _auto_save_dir = os.getenv("AUTO_SAVE_DIR", "")
 
+    # Loop detection state
+    _consecutive_tool_name = [""]
+    _consecutive_tool_count = [0]
+    _loop_threshold = [0]  # 0=disabled
+    _loop_is_async = [False]
+
     async def on_tool_end_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool, result: str) -> None:
         last_mcp_tool_results.append(result)
         _tool_call_counter[0] += 1
         if _auto_save_dir and _auto_save_interval and _tool_call_counter[0] % _auto_save_interval == 0:
             write_auto_save(_auto_save_dir, _tool_call_counter[0], tool.name, result)
+
+        if _loop_threshold[0] > 0 and not _loop_is_async[0]:
+            if _consecutive_tool_name[0] == tool.name:
+                _consecutive_tool_count[0] += 1
+            else:
+                _consecutive_tool_name[0] = tool.name
+                _consecutive_tool_count[0] = 1
+
+            if _consecutive_tool_count[0] >= _loop_threshold[0]:
+                if _auto_save_dir:
+                    write_auto_save(_auto_save_dir, _tool_call_counter[0], tool.name, (result or "")[:500])
+                raise LoopDetectedError(
+                    f"{tool.name} called {_consecutive_tool_count[0]} times consecutively",
+                    tool_name=tool.name,
+                    count=_consecutive_tool_count[0],
+                )
 
     async def on_tool_start_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool) -> None:
         await render_model_output(f"\n** 🤖🛠️ Tool Call: {tool.name}\n")
@@ -626,6 +658,15 @@ async def run_main(
             async_task = task.async_task
             max_concurrent_tasks = task.async_limit
 
+            # Configure loop detection for this task
+            task_loop_val = getattr(task, "max_consecutive_same_tool", None)
+            _loop_threshold[0] = (
+                task_loop_val
+                if task_loop_val is not None
+                else int(os.getenv("LOOP_MAX_CONSECUTIVE", "0"))
+            )
+            _loop_is_async[0] = async_task
+
             # Render prompt template (skip if repeat_prompt — result not yet available)
             if task_prompt and not repeat_prompt:
                 try:
@@ -661,6 +702,10 @@ async def run_main(
                     task_results: list[Any] = []
                     semaphore = asyncio.Semaphore(max_concurrent_tasks)
                     for p_prompt in prompts_to_run:
+                        # Reset loop detection per prompt
+                        _consecutive_tool_name[0] = ""
+                        _consecutive_tool_count[0] = 0
+
                         resolved_agents: dict[str, Any] = {}
                         current_agents = list(agents_list)
                         if not current_agents:
@@ -741,6 +786,10 @@ async def run_main(
                         break
                     except (KeyboardInterrupt, SystemExit):
                         raise
+                    except LoopDetectedError as exc:
+                        last_task_error = exc
+                        logging.warning(f"Loop detected in task {task_name!r}: {exc}")
+                        break
                     except (APIConnectionError, APITimeoutError, ConnectionError, TimeoutError) as exc:
                         last_task_error = exc
                         remaining = TASK_RETRY_LIMIT - attempt - 1

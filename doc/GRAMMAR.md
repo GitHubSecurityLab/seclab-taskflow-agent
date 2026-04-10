@@ -118,6 +118,24 @@ Example:
         ...
 ```
 
+### max_consecutive_same_tool
+
+`max_consecutive_same_tool` sets the maximum number of times the same tool can be called
+consecutively before the task is aborted with a checkpoint.
+
+- **Omitted or `null`** (default): inherits from the `LOOP_MAX_CONSECUTIVE` environment variable; if that is also unset or `0`, detection is disabled.
+- **`0`**: explicitly disables detection for this task, even when `LOOP_MAX_CONSECUTIVE` is set globally.
+- **Positive integer**: enables detection at that threshold.
+
+```yaml
+  - task:
+      max_consecutive_same_tool: 10
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        Audit this codebase.
+```
+
 ### Running templated tasks in a loop
 
 Often we may want to iterate through the same tasks with different inputs. For example, we may want to fetch all the functions from a code base and then analyze each of the functions. This can be done using two consecutive tasks and with the help of the `repeat_prompt` field. 

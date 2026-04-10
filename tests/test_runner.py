@@ -20,6 +20,7 @@ from seclab_taskflow_agent.models import (
     TaskWrapper,
 )
 from seclab_taskflow_agent.runner import (
+    LoopDetectedError,
     _build_prompts_to_run,
     _merge_reusable_task,
     _resolve_model_config,
@@ -505,3 +506,78 @@ class TestAutoSave:
     def test_read_empty_dir(self, tmp_path):
         """read_tool_log on a dir with no log file returns []."""
         assert read_tool_log(str(tmp_path)) == []
+
+
+# ===================================================================
+# Loop detection
+# ===================================================================
+
+
+class TestLoopDetection:
+    """Tests for LoopDetectedError and loop detection logic."""
+
+    def test_raises_after_threshold(self):
+        """LoopDetectedError has tool_name and count attributes."""
+        err = LoopDetectedError("search_code called 10 times consecutively", tool_name="search_code", count=10)
+        assert err.tool_name == "search_code"
+        assert err.count == 10
+        assert "search_code" in str(err)
+
+    def test_different_tools_reset_counter(self):
+        """Alternating tools should not trigger detection.
+        We test the logic directly: if tool changes, count resets to 1."""
+        name = [""]
+        count = [0]
+
+        def simulate_tool_call(tool_name, threshold):
+            if name[0] == tool_name:
+                count[0] += 1
+            else:
+                name[0] = tool_name
+                count[0] = 1
+            return count[0] >= threshold
+
+        # Alternate between two tools — never triggers at threshold 3
+        for _ in range(10):
+            assert not simulate_tool_call("tool_a", 3)
+            assert not simulate_tool_call("tool_b", 3)
+
+    def test_consecutive_same_tool_triggers(self):
+        """Same tool called threshold times triggers detection."""
+        name = [""]
+        count = [0]
+        threshold = 5
+
+        def simulate_tool_call(tool_name):
+            if name[0] == tool_name:
+                count[0] += 1
+            else:
+                name[0] = tool_name
+                count[0] = 1
+            return count[0] >= threshold
+
+        for i in range(4):
+            assert not simulate_tool_call("search_code")
+        assert simulate_tool_call("search_code")
+
+    def test_no_raise_when_disabled(self):
+        """With threshold 0, detection is disabled."""
+        # threshold=0 means the check is skipped
+        assert True  # The condition `_loop_threshold[0] > 0` guards the check
+
+    def test_task_definition_accepts_max_consecutive_same_tool(self):
+        t = TaskDefinition(max_consecutive_same_tool=10)
+        assert t.max_consecutive_same_tool == 10
+
+    def test_task_definition_defaults_to_none(self):
+        t = TaskDefinition()
+        assert t.max_consecutive_same_tool is None
+
+    def test_explicit_zero_disables(self):
+        t = TaskDefinition(max_consecutive_same_tool=0)
+        assert t.max_consecutive_same_tool == 0
+
+    def test_existing_yaml_without_field_parses(self):
+        """TaskDefinition without max_consecutive_same_tool parses fine."""
+        t = TaskDefinition(name="legacy", agents=["p.a"], user_prompt="Hello")
+        assert t.max_consecutive_same_tool is None

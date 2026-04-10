@@ -97,6 +97,7 @@ class TaskDefinition(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     inputs: dict[str, Any] = Field(default_factory=dict)
     max_steps: int = 0  # 0 means use the runner default
+    max_consecutive_same_tool: int | None = None  # None = use LOOP_MAX_CONSECUTIVE env; 0 = disabled
     uses: str = ""
 
     # async settings (``async`` is a reserved word, aliased)
