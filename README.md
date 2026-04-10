@@ -101,6 +101,12 @@ Failed tasks are automatically retried up to 3 times with increasing backoff
 before the session is saved. Session checkpoints are stored in the
 platform-specific application data directory.
 
+### Auto-save tool log
+
+Set `AUTO_SAVE_DIR` and `AUTO_SAVE_INTERVAL` to enable periodic tool-result
+logging. Every N tool calls, the runner appends an NDJSON entry to
+`{AUTO_SAVE_DIR}/auto_save_tool_log.ndjson`. Disabled by default (interval=0).
+
 ### Error Output
 
 By default, errors are shown as concise one-line messages. Use `--debug` (or
