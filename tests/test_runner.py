@@ -24,6 +24,8 @@ from seclab_taskflow_agent.runner import (
     _merge_reusable_task,
     _resolve_model_config,
     _resolve_task_model,
+    read_tool_log,
+    write_auto_save,
 )
 
 
@@ -449,83 +451,56 @@ class TestBuildPromptsToRun:
 
 
 class TestAutoSave:
-    """Tests for auto-save tool log scaffolding in run_main."""
+    """Tests for write_auto_save / read_tool_log (module-level functions)."""
 
-    @staticmethod
-    def _run_hook(monkeypatch, tmp_path, interval, calls):
-        """Set up auto-save env, import run_main to trigger closure, simulate tool calls."""
-        monkeypatch.setenv("AUTO_SAVE_DIR", str(tmp_path))
-        monkeypatch.setenv("AUTO_SAVE_INTERVAL", str(interval))
+    def test_disabled_when_no_dir(self):
+        """read_tool_log returns [] when dir is empty string."""
+        assert read_tool_log("") == []
 
-        # We need to exercise the on_tool_end_hook closure.
-        # The simplest way is to import run_main, but the hook is a closure
-        # inside run_main that we can't call directly.  Instead, we test
-        # the _write_auto_save / _read_tool_log helpers indirectly by
-        # simulating what run_main does.
-        import importlib
-        import seclab_taskflow_agent.runner as runner_mod
+    def test_write_then_read_roundtrip(self, tmp_path):
+        """write_auto_save produces entries that read_tool_log can read back."""
+        d = str(tmp_path)
+        write_auto_save(d, turn=1, tool_name="search_code", result="found 5")
+        write_auto_save(d, turn=2, tool_name="read_file", result="contents")
+        entries = read_tool_log(d)
+        assert len(entries) == 2
+        assert entries[0]["turn"] == 1
+        assert entries[0]["tool"] == "search_code"
+        assert entries[1]["turn"] == 2
 
-        importlib.reload(runner_mod)
-
-        # Construct the same state the closure would have.
-        counter = [0]
-        auto_dir = str(tmp_path)
-        auto_interval = interval
-
-        import os
-
-        os.makedirs(auto_dir, exist_ok=True)
-        save_path = os.path.join(auto_dir, "auto_save_tool_log.ndjson")
-
-        for tool_name, result in calls:
-            counter[0] += 1
-            if auto_dir and auto_interval and counter[0] % auto_interval == 0:
-                entry = json.dumps({
-                    "turn": counter[0],
-                    "tool": tool_name,
-                    "result_preview": (result or "")[:2000],
-                })
-                with open(save_path, "a") as f:
-                    f.write(entry + "\n")
-        return save_path
-
-    def test_disabled_by_default(self, monkeypatch, tmp_path):
-        """No log file created when interval is 0."""
-        import os
-
-        save_path = self._run_hook(monkeypatch, tmp_path, 0, [("tool_a", "res")])
-        assert not os.path.exists(save_path)
-
-    def test_writes_every_n_calls_when_enabled(self, monkeypatch, tmp_path):
-        """Log entries are written every N calls."""
-        calls = [(f"tool_{i}", f"result_{i}") for i in range(6)]
-        save_path = self._run_hook(monkeypatch, tmp_path, 3, calls)
-        with open(save_path) as f:
-            lines = [line.strip() for line in f if line.strip()]
-        assert len(lines) == 2  # calls 3 and 6
-
-    def test_log_format_has_turn_tool_preview(self, monkeypatch, tmp_path):
+    def test_log_format_has_turn_tool_preview(self, tmp_path):
         """Each NDJSON entry has the expected keys."""
-        calls = [("search_code", "found 5 matches")]
-        save_path = self._run_hook(monkeypatch, tmp_path, 1, calls)
-        with open(save_path) as f:
-            entry = json.loads(f.readline())
-        assert entry["turn"] == 1
-        assert entry["tool"] == "search_code"
-        assert entry["result_preview"] == "found 5 matches"
+        d = str(tmp_path)
+        write_auto_save(d, turn=7, tool_name="search_code", result="found 5 matches")
+        entries = read_tool_log(d)
+        assert len(entries) == 1
+        assert entries[0] == {"turn": 7, "tool": "search_code", "result_preview": "found 5 matches"}
 
-    def test_result_truncated_to_2000(self, monkeypatch, tmp_path):
+    def test_result_truncated_to_2000(self, tmp_path):
         """Result preview is capped at 2000 characters."""
-        long_result = "x" * 5000
-        calls = [("big_tool", long_result)]
-        save_path = self._run_hook(monkeypatch, tmp_path, 1, calls)
-        with open(save_path) as f:
-            entry = json.loads(f.readline())
-        assert len(entry["result_preview"]) == 2000
+        d = str(tmp_path)
+        write_auto_save(d, turn=1, tool_name="big", result="x" * 5000)
+        entries = read_tool_log(d)
+        assert len(entries[0]["result_preview"]) == 2000
 
     def test_survives_write_failure(self):
-        """Auto-save to an impossible path does not raise."""
+        """write_auto_save to an impossible path does not raise."""
+        write_auto_save("/dev/null/impossible", turn=1, tool_name="t", result="r")
+
+    def test_read_skips_corrupt_trailing_line(self, tmp_path):
+        """read_tool_log skips truncated/corrupt lines without discarding valid ones."""
         import os
 
-        save_path = os.path.join("/dev/null/impossible", "auto_save_tool_log.ndjson")
-        assert not os.path.exists(save_path)
+        d = str(tmp_path)
+        write_auto_save(d, turn=1, tool_name="good", result="ok")
+        # Append a corrupt line simulating crash mid-write
+        log_path = os.path.join(d, "auto_save_tool_log.ndjson")
+        with open(log_path, "a") as f:
+            f.write('{"truncated\n')
+        entries = read_tool_log(d)
+        assert len(entries) == 1
+        assert entries[0]["tool"] == "good"
+
+    def test_read_empty_dir(self, tmp_path):
+        """read_tool_log on a dir with no log file returns []."""
+        assert read_tool_log(str(tmp_path)) == []

@@ -16,7 +16,9 @@ __all__ = [
     "MAX_RATE_LIMIT_BACKOFF",
     "RATE_LIMIT_BACKOFF",
     "deploy_task_agents",
+    "read_tool_log",
     "run_main",
+    "write_auto_save",
 ]
 
 import asyncio
@@ -52,6 +54,49 @@ MAX_RATE_LIMIT_BACKOFF = 120  # Maximum backoff cap in seconds for rate-limit re
 MAX_API_RETRY = 5  # Maximum number of consecutive API error retries
 TASK_RETRY_LIMIT = 3  # Maximum retry attempts for a failed task
 TASK_RETRY_BACKOFF = 10  # Initial backoff in seconds between task retries
+
+AUTO_SAVE_LOG_NAME = "auto_save_tool_log.ndjson"
+
+
+def write_auto_save(
+    auto_save_dir: str,
+    turn: int,
+    tool_name: str,
+    result: str,
+) -> None:
+    """Append tool result to auto-save log (NDJSON, append-only, crash-safe)."""
+    try:
+        os.makedirs(auto_save_dir, exist_ok=True)
+        save_path = os.path.join(auto_save_dir, AUTO_SAVE_LOG_NAME)
+        entry = json.dumps({
+            "turn": turn,
+            "tool": tool_name,
+            "result_preview": (result or "")[:2000],
+        })
+        with open(save_path, "a") as f:
+            f.write(entry + "\n")
+    except Exception as e:
+        logging.warning(f"Auto-save failed: {e}")
+
+
+def read_tool_log(auto_save_dir: str) -> list[dict]:
+    """Read NDJSON auto-save log.  Skips malformed lines."""
+    if not auto_save_dir:
+        return []
+    entries: list[dict] = []
+    try:
+        path = os.path.join(auto_save_dir, AUTO_SAVE_LOG_NAME)
+        if os.path.exists(path):
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    with contextlib.suppress(json.JSONDecodeError):
+                        entries.append(json.loads(line))
+    except Exception:
+        logging.debug("Failed to read auto-save tool log", exc_info=True)
+    return entries
 
 
 def _resolve_model_config(
@@ -475,45 +520,11 @@ async def run_main(
     _auto_save_interval = int(os.getenv("AUTO_SAVE_INTERVAL", "0"))
     _auto_save_dir = os.getenv("AUTO_SAVE_DIR", "")
 
-    def _write_auto_save(tool_name: str, result: str) -> None:
-        """Append tool result to auto-save log (NDJSON, append-only, crash-safe)."""
-        try:
-            os.makedirs(_auto_save_dir, exist_ok=True)
-            save_path = os.path.join(_auto_save_dir, "auto_save_tool_log.ndjson")
-            entry = json.dumps({
-                "turn": _tool_call_counter[0],
-                "tool": tool_name,
-                "result_preview": (result or "")[:2000],
-            })
-            with open(save_path, "a") as f:
-                f.write(entry + "\n")
-        except Exception as e:
-            logging.warning(f"Auto-save failed: {e}")
-
-    def _read_tool_log() -> list[dict]:
-        """Read NDJSON auto-save log.  Skips malformed lines."""
-        if not _auto_save_dir:
-            return []
-        entries: list[dict] = []
-        try:
-            path = os.path.join(_auto_save_dir, "auto_save_tool_log.ndjson")
-            if os.path.exists(path):
-                with open(path) as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        with contextlib.suppress(json.JSONDecodeError):
-                            entries.append(json.loads(line))
-        except Exception:
-            logging.debug("Failed to read auto-save tool log", exc_info=True)
-        return entries
-
     async def on_tool_end_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool, result: str) -> None:
         last_mcp_tool_results.append(result)
         _tool_call_counter[0] += 1
         if _auto_save_dir and _auto_save_interval and _tool_call_counter[0] % _auto_save_interval == 0:
-            _write_auto_save(tool.name, result)
+            write_auto_save(_auto_save_dir, _tool_call_counter[0], tool.name, result)
 
     async def on_tool_start_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool) -> None:
         await render_model_output(f"\n** 🤖🛠️ Tool Call: {tool.name}\n")
