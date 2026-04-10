@@ -484,8 +484,9 @@ class TestAutoSave:
         assert len(entries[0]["result_preview"]) == 2000
 
     def test_survives_write_failure(self):
-        """write_auto_save to an impossible path does not raise."""
-        write_auto_save("/dev/null/impossible", turn=1, tool_name="t", result="r")
+        """write_auto_save suppresses write errors without crashing."""
+        with patch("builtins.open", side_effect=OSError("disk full")):
+            write_auto_save("/tmp/any", turn=1, tool_name="t", result="r")
 
     def test_read_skips_corrupt_trailing_line(self, tmp_path):
         """read_tool_log skips truncated/corrupt lines without discarding valid ones."""
