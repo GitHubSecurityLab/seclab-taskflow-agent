@@ -16,6 +16,7 @@ __all__ = [
     "MAX_API_RETRY",
     "MAX_RATE_LIMIT_BACKOFF",
     "RATE_LIMIT_BACKOFF",
+    "check_consecutive_tool_loop",
     "deploy_task_agents",
     "read_tool_log",
     "run_main",
@@ -107,6 +108,38 @@ class LoopDetectedError(Exception):
         super().__init__(message)
         self.tool_name = tool_name
         self.count = count
+
+
+def check_consecutive_tool_loop(
+    tool_name: str,
+    consecutive_name: list[str],
+    consecutive_count: list[int],
+    threshold: int,
+) -> None:
+    """Track consecutive same-tool calls and raise on threshold.
+
+    Args:
+        tool_name: Name of the tool that just completed.
+        consecutive_name: Single-element list holding the current tool name streak.
+        consecutive_count: Single-element list holding the current streak count.
+        threshold: Maximum allowed consecutive calls.  0 or negative disables.
+
+    Raises:
+        LoopDetectedError: When *consecutive_count* reaches *threshold*.
+    """
+    if threshold <= 0:
+        return
+    if consecutive_name[0] == tool_name:
+        consecutive_count[0] += 1
+    else:
+        consecutive_name[0] = tool_name
+        consecutive_count[0] = 1
+    if consecutive_count[0] >= threshold:
+        raise LoopDetectedError(
+            f"{tool_name} called {consecutive_count[0]} times consecutively",
+            tool_name=tool_name,
+            count=consecutive_count[0],
+        )
 
 
 def _resolve_model_config(
@@ -546,21 +579,15 @@ async def run_main(
         if _auto_save_dir and _auto_save_interval and _tool_call_counter[0] % _auto_save_interval == 0:
             write_auto_save(_auto_save_dir, _tool_call_counter[0], tool.name, result)
 
-        if _loop_threshold[0] > 0 and not _loop_is_async[0]:
-            if _consecutive_tool_name[0] == tool.name:
-                _consecutive_tool_count[0] += 1
-            else:
-                _consecutive_tool_name[0] = tool.name
-                _consecutive_tool_count[0] = 1
-
-            if _consecutive_tool_count[0] >= _loop_threshold[0]:
+        if not _loop_is_async[0]:
+            try:
+                check_consecutive_tool_loop(
+                    tool.name, _consecutive_tool_name, _consecutive_tool_count, _loop_threshold[0],
+                )
+            except LoopDetectedError:
                 if _auto_save_dir:
                     write_auto_save(_auto_save_dir, _tool_call_counter[0], tool.name, (result or "")[:500])
-                raise LoopDetectedError(
-                    f"{tool.name} called {_consecutive_tool_count[0]} times consecutively",
-                    tool_name=tool.name,
-                    count=_consecutive_tool_count[0],
-                )
+                raise
 
     async def on_tool_start_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool) -> None:
         await render_model_output(f"\n** 🤖🛠️ Tool Call: {tool.name}\n")

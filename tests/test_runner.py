@@ -14,6 +14,7 @@ import pytest
 
 from seclab_taskflow_agent.models import (
     ModelConfigDocument,
+    PersonalityDocument,
     TaskDefinition,
     TaskflowDocument,
     TaskflowHeader,
@@ -25,7 +26,9 @@ from seclab_taskflow_agent.runner import (
     _merge_reusable_task,
     _resolve_model_config,
     _resolve_task_model,
+    check_consecutive_tool_loop,
     read_tool_log,
+    run_main,
     write_auto_save,
 )
 
@@ -62,6 +65,17 @@ def _make_taskflow_doc(tasks: list[TaskDefinition]) -> TaskflowDocument:
         **{
             "seclab-taskflow-agent": _make_header(),
             "taskflow": [TaskWrapper(task=t) for t in tasks],
+        }
+    )
+
+
+def _make_personality() -> PersonalityDocument:
+    return PersonalityDocument(
+        **{
+            "seclab-taskflow-agent": TaskflowHeader(version="1.0", filetype="personality"),
+            "personality": "test bot",
+            "task": "do things",
+            "toolboxes": [],
         }
     )
 
@@ -514,56 +528,55 @@ class TestAutoSave:
 
 
 class TestLoopDetection:
-    """Tests for LoopDetectedError and loop detection logic."""
+    """Tests for check_consecutive_tool_loop (real implementation)."""
 
     def test_raises_after_threshold(self):
-        """LoopDetectedError has tool_name and count attributes."""
-        err = LoopDetectedError("search_code called 10 times consecutively", tool_name="search_code", count=10)
-        assert err.tool_name == "search_code"
-        assert err.count == 10
-        assert "search_code" in str(err)
+        """Reaching the threshold raises LoopDetectedError with correct attrs."""
+        name, count = [""], [0]
+        for _ in range(4):
+            check_consecutive_tool_loop("search_code", name, count, threshold=5)
+        with pytest.raises(LoopDetectedError) as exc_info:
+            check_consecutive_tool_loop("search_code", name, count, threshold=5)
+        assert exc_info.value.tool_name == "search_code"
+        assert exc_info.value.count == 5
 
     def test_different_tools_reset_counter(self):
-        """Alternating tools should not trigger detection.
-        We test the logic directly: if tool changes, count resets to 1."""
-        name = [""]
-        count = [0]
-
-        def simulate_tool_call(tool_name, threshold):
-            if name[0] == tool_name:
-                count[0] += 1
-            else:
-                name[0] = tool_name
-                count[0] = 1
-            return count[0] >= threshold
-
-        # Alternate between two tools — never triggers at threshold 3
-        for _ in range(10):
-            assert not simulate_tool_call("tool_a", 3)
-            assert not simulate_tool_call("tool_b", 3)
-
-    def test_consecutive_same_tool_triggers(self):
-        """Same tool called threshold times triggers detection."""
-        name = [""]
-        count = [0]
-        threshold = 5
-
-        def simulate_tool_call(tool_name):
-            if name[0] == tool_name:
-                count[0] += 1
-            else:
-                name[0] = tool_name
-                count[0] = 1
-            return count[0] >= threshold
-
-        for i in range(4):
-            assert not simulate_tool_call("search_code")
-        assert simulate_tool_call("search_code")
+        """Alternating tools never triggers — counter resets on name change."""
+        name, count = [""], [0]
+        for _ in range(20):
+            check_consecutive_tool_loop("tool_a", name, count, threshold=3)
+            check_consecutive_tool_loop("tool_b", name, count, threshold=3)
 
     def test_no_raise_when_disabled(self):
-        """With threshold 0, detection is disabled."""
-        # threshold=0 means the check is skipped
-        assert True  # The condition `_loop_threshold[0] > 0` guards the check
+        """Threshold 0 disables detection entirely."""
+        name, count = [""], [0]
+        for _ in range(100):
+            check_consecutive_tool_loop("same_tool", name, count, threshold=0)
+
+    def test_negative_threshold_disables(self):
+        """Negative threshold also disables detection."""
+        name, count = [""], [0]
+        for _ in range(100):
+            check_consecutive_tool_loop("same_tool", name, count, threshold=-1)
+
+    def test_counter_resets_on_different_tool(self):
+        """Inserting a different tool resets the streak."""
+        name, count = [""], [0]
+        for _ in range(4):
+            check_consecutive_tool_loop("search_code", name, count, threshold=5)
+        assert count[0] == 4
+        check_consecutive_tool_loop("read_file", name, count, threshold=5)
+        assert count[0] == 1
+        assert name[0] == "read_file"
+
+    def test_state_mutation_visible_to_caller(self):
+        """The function mutates the lists in-place so callers see updates."""
+        name, count = [""], [0]
+        check_consecutive_tool_loop("tool_x", name, count, threshold=10)
+        assert name[0] == "tool_x"
+        assert count[0] == 1
+        check_consecutive_tool_loop("tool_x", name, count, threshold=10)
+        assert count[0] == 2
 
     def test_task_definition_accepts_max_consecutive_same_tool(self):
         t = TaskDefinition(max_consecutive_same_tool=10)
@@ -581,3 +594,118 @@ class TestLoopDetection:
         """TaskDefinition without max_consecutive_same_tool parses fine."""
         t = TaskDefinition(name="legacy", agents=["p.a"], user_prompt="Hello")
         assert t.max_consecutive_same_tool is None
+
+
+# ===================================================================
+# Loop detection integration (drives run_main → on_tool_end_hook)
+# ===================================================================
+
+
+def _run_main_with_loop(
+    monkeypatch,
+    tmp_path,
+    task_kwargs,
+    n_tool_calls,
+    tool_name="search_code",
+):
+    """Helper: run run_main with a fake deploy that fires N same-tool completions.
+
+    Returns the LoopDetectedError if raised, or None if run_main completed.
+    """
+    task = TaskDefinition(
+        agents=["test.personality"],
+        user_prompt="do stuff",
+        **task_kwargs,
+    )
+    doc = _make_taskflow_doc([task])
+
+    at = _mock_available_tools()
+    at.get_taskflow.return_value = doc
+    at.get_personality.return_value = _make_personality()
+
+    async def fake_deploy(_at, _agents, _prompt, **kwargs):
+        run_hooks = kwargs.get("run_hooks")
+        if run_hooks and run_hooks.on_tool_end:
+            ctx = MagicMock()
+            agent = MagicMock()
+            tool = MagicMock()
+            tool.name = tool_name
+            for _ in range(n_tool_calls):
+                await run_hooks.on_tool_end(ctx, agent, tool, "result")
+        return True
+
+    monkeypatch.setattr("seclab_taskflow_agent.runner.deploy_task_agents", fake_deploy)
+    monkeypatch.setattr("seclab_taskflow_agent.session._data_dir", lambda: tmp_path)
+
+    with patch("seclab_taskflow_agent.runner.render_model_output", new_callable=AsyncMock):
+            try:
+                asyncio.run(run_main(at, None, "test.taskflow", {}, None))
+            except LoopDetectedError as exc:
+                return exc
+    return None
+
+
+class TestLoopDetectionIntegration:
+    """Integration tests that drive run_main → on_tool_end_hook."""
+
+    def test_triggers_via_task_field(self, monkeypatch, tmp_path):
+        """max_consecutive_same_tool=3 on the task fires after 3 calls."""
+        exc = _run_main_with_loop(
+            monkeypatch, tmp_path,
+            task_kwargs={"max_consecutive_same_tool": 3},
+            n_tool_calls=5,
+        )
+        assert exc is not None
+        assert exc.tool_name == "search_code"
+        assert exc.count == 3
+
+    def test_triggers_via_env_fallback(self, monkeypatch, tmp_path):
+        """LOOP_MAX_CONSECUTIVE env var is used when task field is None."""
+        monkeypatch.setenv("LOOP_MAX_CONSECUTIVE", "4")
+        exc = _run_main_with_loop(
+            monkeypatch, tmp_path,
+            task_kwargs={},  # no task-level field → env fallback
+            n_tool_calls=6,
+        )
+        assert exc is not None
+        assert exc.count == 4
+
+    def test_disabled_when_zero(self, monkeypatch, tmp_path):
+        """max_consecutive_same_tool=0 disables even with env set."""
+        monkeypatch.setenv("LOOP_MAX_CONSECUTIVE", "3")
+        exc = _run_main_with_loop(
+            monkeypatch, tmp_path,
+            task_kwargs={"max_consecutive_same_tool": 0},
+            n_tool_calls=10,
+        )
+        assert exc is None
+
+    def test_async_task_bypass(self, monkeypatch, tmp_path):
+        """Loop detection is skipped for async tasks."""
+        task = TaskDefinition(
+            agents=["test.personality"],
+            user_prompt="do stuff",
+            max_consecutive_same_tool=3,
+            **{"async": True},
+        )
+        doc = _make_taskflow_doc([task])
+
+        at = _mock_available_tools()
+        at.get_taskflow.return_value = doc
+        at.get_personality.return_value = _make_personality()
+
+        async def fake_deploy(_at, _agents, _prompt, **kwargs):
+            run_hooks = kwargs.get("run_hooks")
+            if run_hooks and run_hooks.on_tool_end:
+                ctx, agent, tool = MagicMock(), MagicMock(), MagicMock()
+                tool.name = "search_code"
+                for _ in range(10):
+                    await run_hooks.on_tool_end(ctx, agent, tool, "r")
+            return True
+
+        monkeypatch.setattr("seclab_taskflow_agent.runner.deploy_task_agents", fake_deploy)
+        monkeypatch.setattr("seclab_taskflow_agent.session._data_dir", lambda: tmp_path)
+
+        with patch("seclab_taskflow_agent.runner.render_model_output", new_callable=AsyncMock):
+            # Should NOT raise — async bypass
+            asyncio.run(run_main(at, None, "test.taskflow", {}, None))
