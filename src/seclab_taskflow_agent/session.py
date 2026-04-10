@@ -20,6 +20,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -62,6 +63,10 @@ class TaskflowSession(BaseModel):
 
     # Accumulated tool results carried across tasks (used by repeat_prompt)
     last_tool_results: list[str] = Field(default_factory=list)
+
+    # Failure forensics: captured at mark_failed time for post-mortem inspection
+    memcache_snapshot: dict[str, Any] = Field(default_factory=dict)
+    tool_log_snapshot: list[dict[str, Any]] = Field(default_factory=list)
 
     @property
     def next_task_index(self) -> int:
@@ -107,9 +112,22 @@ class TaskflowSession(BaseModel):
         self.finished = True
         self.save()
 
-    def mark_failed(self, error: str) -> None:
-        """Mark the session as failed with an error message and save."""
+    def mark_failed(
+        self,
+        error: str,
+        memcache_snapshot: dict[str, Any] | None = None,
+        tool_log_snapshot: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Mark the session as failed with an error message and save.
+
+        Optionally captures memcache state and tool log at failure time
+        for post-mortem inspection.
+        """
         self.error = error
+        if memcache_snapshot is not None:
+            self.memcache_snapshot = memcache_snapshot
+        if tool_log_snapshot is not None:
+            self.tool_log_snapshot = tool_log_snapshot
         self.save()
 
     @classmethod

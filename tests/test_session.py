@@ -92,3 +92,53 @@ class TestCompletedTask:
         t = CompletedTask(index=2, name="analyze", result=True, tool_results=["r1", "r2"])
         assert t.index == 2
         assert t.tool_results == ["r1", "r2"]
+
+
+class TestSessionForensics:
+    """Tests for failure forensics (memcache_snapshot, tool_log_snapshot)."""
+
+    def test_mark_failed_with_snapshot_roundtrips(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("seclab_taskflow_agent.session.session_dir", lambda: tmp_path)
+        s = TaskflowSession(taskflow_path="test.flow")
+        snap = {"findings": ["xss", "sqli"]}
+        log = [{"turn": 1, "tool": "search_code", "result_preview": "found"}]
+        s.mark_failed("crash", memcache_snapshot=snap, tool_log_snapshot=log)
+
+        loaded = TaskflowSession.load(s.session_id)
+        assert loaded.memcache_snapshot == snap
+        assert loaded.tool_log_snapshot == log
+        assert loaded.error == "crash"
+
+    def test_mark_failed_without_snapshot_backward_compatible(self):
+        s = TaskflowSession(taskflow_path="test.flow")
+        s.mark_failed("simple error")
+        assert s.memcache_snapshot == {}
+        assert s.tool_log_snapshot == []
+        assert s.error == "simple error"
+
+    def test_old_session_json_without_new_fields_loads(self, tmp_path, monkeypatch):
+        """Session JSON from before forensics fields was added still loads."""
+        monkeypatch.setattr("seclab_taskflow_agent.session.session_dir", lambda: tmp_path)
+        # Write minimal JSON without new fields
+        import json
+
+        old_data = {
+            "session_id": "oldformat123",
+            "taskflow_path": "old.flow",
+            "cli_globals": {},
+            "prompt": "",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "",
+            "completed_tasks": [],
+            "total_tasks": 0,
+            "finished": False,
+            "error": "old error",
+            "last_tool_results": [],
+        }
+        path = tmp_path / "oldformat123.json"
+        path.write_text(json.dumps(old_data))
+
+        loaded = TaskflowSession.load("oldformat123")
+        assert loaded.error == "old error"
+        assert loaded.memcache_snapshot == {}
+        assert loaded.tool_log_snapshot == []

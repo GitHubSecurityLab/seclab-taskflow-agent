@@ -111,3 +111,10 @@ class MemcacheDictionaryFileBackend(Backend):
             return "Memory cache was cleared, all previous key lists are invalidated."
 
         return _clear_cache()
+
+    def snapshot_state(self) -> dict[str, Any]:
+        """Return a deep copy of the in-memory dictionary."""
+        import copy
+
+        self._inflate_memory()
+        return copy.deepcopy(self.memcache)

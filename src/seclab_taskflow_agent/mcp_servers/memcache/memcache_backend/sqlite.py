@@ -86,3 +86,15 @@ class SqliteBackend(Backend):
             session.query(KeyValue).delete()
             session.commit()
         return "Cleared all keys in memory cache."
+
+    def snapshot_state(self) -> dict[str, Any]:
+        """Return all distinct keys with their merged values."""
+        with Session(self.engine) as session:
+            keys = [k[0] for k in session.query(KeyValue.key).distinct().all()]
+        result = {}
+        for k in keys:
+            if k.startswith("_log:") and hasattr(self, "get_log"):
+                result[k] = self.get_log(k.removeprefix("_log:"))
+            else:
+                result[k] = self.get_state(k)
+        return result

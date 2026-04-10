@@ -99,6 +99,25 @@ def read_tool_log(auto_save_dir: str) -> list[dict]:
     return entries
 
 
+def _snapshot_memcache_state() -> dict[str, Any]:
+    """Read memcache state via backend's snapshot_state().  Returns {} on failure."""
+    try:
+        from .path_utils import mcp_data_dir
+
+        state_dir = str(mcp_data_dir("seclab-taskflow-agent", "memcache", "MEMCACHE_STATE_DIR"))
+        backend_name = os.getenv("MEMCACHE_BACKEND", "sqlite")
+        if backend_name == "dictionary_file":
+            from .mcp_servers.memcache.memcache_backend.dictionary_file import MemcacheDictionaryFileBackend
+
+            return MemcacheDictionaryFileBackend(state_dir).snapshot_state()
+        from .mcp_servers.memcache.memcache_backend.sqlite import SqliteBackend
+
+        return SqliteBackend(state_dir).snapshot_state()
+    except Exception:
+        logging.debug("Failed to snapshot memcache state", exc_info=True)
+    return {}
+
+
 def _resolve_model_config(
     available_tools: AvailableTools,
     model_config_ref: str,
@@ -761,7 +780,13 @@ async def run_main(
 
                 # If all retries exhausted with an exception, save and re-raise
                 if last_task_error is not None:
-                    session.mark_failed(f"Task {task_name!r}: {last_task_error}")
+                    snap = _snapshot_memcache_state()
+                    log = read_tool_log(_auto_save_dir)
+                    session.mark_failed(
+                        f"Task {task_name!r}: {last_task_error}",
+                        memcache_snapshot=snap,
+                        tool_log_snapshot=log,
+                    )
                     await render_model_output(
                         f"** 🤖💾 Session saved: {session.session_id}\n"
                         f"** 🤖💡 Resume with: --resume {session.session_id}\n"
@@ -771,7 +796,13 @@ async def run_main(
                 if must_complete and not task_complete:
                     logging.critical("Required task not completed ... aborting!")
                     await render_model_output("🤖💥 *Required task not completed ...\n")
-                    session.mark_failed(f"Required task {task_name!r} did not complete")
+                    snap = _snapshot_memcache_state()
+                    log = read_tool_log(_auto_save_dir)
+                    session.mark_failed(
+                        f"Required task {task_name!r} did not complete",
+                        memcache_snapshot=snap,
+                        tool_log_snapshot=log,
+                    )
                     await render_model_output(
                         f"** 🤖💾 Session saved: {session.session_id}\n"
                         f"** 🤖💡 Resume with: --resume {session.session_id}\n"

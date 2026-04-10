@@ -22,3 +22,7 @@ class Backend:
 
     def clear_cache(self) -> str:
         pass
+
+    def snapshot_state(self) -> dict[str, Any]:
+        """Return all keys with their merged values as a dict. Safe to call externally."""
+        return {}
