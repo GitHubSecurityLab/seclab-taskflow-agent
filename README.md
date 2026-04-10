@@ -435,6 +435,9 @@ confirm:
 A sequence of interdependent tasks performed by a set of Agents. Configured through YAML files of `filetype` `taskflow`.
 Taskflows supports a number of features, and their details can be found [here](doc/GRAMMAR.md).
 
+For long-running audits, `max_consecutive_same_tool` can limit repetitive tool
+calls (see [GRAMMAR.md](doc/GRAMMAR.md#max_consecutive_same_tool)).
+
 Example:
 
 ```yaml
