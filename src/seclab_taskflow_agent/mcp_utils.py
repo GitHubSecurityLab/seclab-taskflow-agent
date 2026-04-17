@@ -165,7 +165,10 @@ def mcp_client_params(
         match kind:
             case "stdio":
                 env = dict(sp.env) if sp.env else None
-                args = list(sp.args) if sp.args else None
+                # Note: must distinguish None from empty list. An empty list is
+                # a valid value (e.g. a binary that takes no args) and must be
+                # passed through to StdioServerParameters as `[]`, not `None`.
+                args = list(sp.args) if sp.args is not None else None
                 logging.debug(f"Initializing toolbox: {tb}\nargs:\n{args}\nenv:\n{env}\n")
                 if env:
                     for k, v in list(env.items()):
@@ -198,7 +201,8 @@ def mcp_client_params(
 
                 if sp.command is not None:
                     env = dict(sp.env) if sp.env else None
-                    args = list(sp.args) if sp.args else None
+                    # See stdio branch above: empty list must not be coerced to None.
+                    args = list(sp.args) if sp.args is not None else None
                     logging.debug(f"Initializing streamable toolbox: {tb}\nargs:\n{args}\nenv:\n{env}\n")
                     exe = shutil.which(sp.command)
                     if exe is None:

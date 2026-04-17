@@ -10,6 +10,9 @@
       "version": "3.11",
       "installTools": true
     },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "24"
+    },
     "ghcr.io/devcontainers/features/git:1": {
       "version": "latest"
     },
