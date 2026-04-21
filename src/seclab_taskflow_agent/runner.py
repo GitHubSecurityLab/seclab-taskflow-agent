@@ -579,7 +579,7 @@ async def run_main(
                     logging.error(f"Template rendering error: {e}")
                     raise ValueError(f"Failed to render prompt template: {e}") from e
 
-            with TmpEnv(env):
+            with TmpEnv(env, context={"globals": global_variables}):
                 prompts_to_run: list[str] = await _build_prompts_to_run(
                     task_prompt, repeat_prompt, last_mcp_tool_results,
                     available_tools, global_variables, inputs,
