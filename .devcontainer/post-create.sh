@@ -19,7 +19,7 @@ pip install -e .
 
 # Install codeql-development-mcp-server and its CodeQL tool query packs
 echo "📦 Installing codeql-development-mcp-server..."
-npm install -g codeql-development-mcp-server
+npm install -g codeql-development-mcp-server@2.25.2
 codeql-development-mcp-server-setup-packs
 
 # Create .env file if it doesn't exist

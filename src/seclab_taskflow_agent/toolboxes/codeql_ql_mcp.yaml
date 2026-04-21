@@ -16,7 +16,7 @@ server_params:
     MONITORING_STORAGE_LOCATION: "{{ env('DATA_DIR') }}"
     LOG_DIR: "{{ env('LOG_DIR') }}"
 server_prompt: |
-  ## CodeQL Development MCP Server (ql-mcp) v2.25.2
+  ## CodeQL Development MCP Server (ql-mcp)
 
   Comprehensive CodeQL analysis backend with 62 tools, 14 prompts, and
   resources across 10 supported languages.
