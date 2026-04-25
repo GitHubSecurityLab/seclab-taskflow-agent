@@ -291,7 +291,7 @@ class TestBuildPromptsToRun:
     @staticmethod
     def _run(coro):
         """Run an async coroutine with render_model_output mocked out."""
-        with patch("seclab_taskflow_agent.runner.render_model_output", new_callable=AsyncMock):
+        with patch("seclab_taskflow_agent.prompt_builder.render_model_output", new_callable=AsyncMock):
             return asyncio.run(coro)
 
     def test_non_repeat_returns_single_prompt(self):
@@ -411,7 +411,7 @@ class TestBuildPromptsToRun:
         results = [self._result_entry(items)]
 
         with patch(
-            "seclab_taskflow_agent.runner.render_template",
+            "seclab_taskflow_agent.prompt_builder.render_template",
             side_effect=Exception("template boom"),
         ), pytest.raises(Exception, match="template boom"):
             self._run(

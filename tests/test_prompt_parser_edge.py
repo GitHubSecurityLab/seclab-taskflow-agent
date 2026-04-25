@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from seclab_taskflow_agent.available_tools import AvailableTools
 from seclab_taskflow_agent.prompt_parser import parse_prompt_args
@@ -18,6 +18,7 @@ def _tools() -> AvailableTools:
 class TestParsePromptArgs:
     """Tests for parse_prompt_args edge cases."""
 
+    @patch("sys.argv", ["main"])
     def test_none_prompt_returns_defaults(self):
         """None prompt causes argparse to read sys.argv; result still has 6 elements."""
         result = parse_prompt_args(_tools(), None)
@@ -28,6 +29,7 @@ class TestParsePromptArgs:
         assert p is None
         assert t is None
 
+    @patch("sys.argv", ["main"])
     def test_empty_string_returns_defaults(self):
         """Empty string prompt returns default values."""
         result = parse_prompt_args(_tools(), "")

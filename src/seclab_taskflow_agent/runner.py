@@ -39,8 +39,10 @@ from .available_tools import AvailableTools
 from .env_utils import TmpEnv
 from .mcp_lifecycle import MCP_CLEANUP_TIMEOUT, build_mcp_servers, mcp_session_task
 from .models import ModelConfigDocument, PersonalityDocument, TaskDefinition
+from .model_resolver import _resolve_model_config, _resolve_task_model
 from .mcp_prompt import mcp_system_prompt
 from .mcp_utils import compress_name, mcp_client_params
+from .prompt_builder import _build_prompts_to_run
 from .render_utils import flush_async_output, render_model_output
 from .shell_utils import shell_tool_call
 from .template_utils import render_template
@@ -53,35 +55,6 @@ TASK_RETRY_LIMIT = 3  # Maximum retry attempts for a failed task
 TASK_RETRY_BACKOFF = 10  # Initial backoff in seconds between task retries
 
 
-def _resolve_model_config(
-    available_tools: AvailableTools,
-    model_config_ref: str,
-) -> tuple[list[str], dict[str, str], dict[str, dict[str, Any]], str]:
-    """Load and validate the model configuration file.
-
-    Args:
-        available_tools: Tool registry used to load the config file.
-        model_config_ref: Reference name for the model config document.
-
-    Returns:
-        A tuple of (model_keys, model_dict, models_params, api_type) where
-        model_keys is the list of logical model names, model_dict maps them
-        to provider model IDs, models_params holds per-model settings, and
-        api_type is ``"chat_completions"`` or ``"responses"``.
-
-    Raises:
-        ValueError: If the config file has structural problems.
-    """
-    m_config: ModelConfigDocument = available_tools.get_model_config(model_config_ref)
-    model_dict: dict[str, str] = m_config.models or {}
-    model_keys: list[str] = list(model_dict.keys())
-    models_params: dict[str, dict[str, Any]] = m_config.model_settings or {}
-    unknown = set(models_params) - set(model_keys)
-    if unknown:
-        raise ValueError(
-            f"Settings section of model_config file {model_config_ref} contains models not in the model section: {unknown}"
-        )
-    return model_keys, model_dict, models_params, m_config.api_type
 
 
 def _merge_reusable_task(
@@ -113,129 +86,6 @@ def _merge_reusable_task(
     return TaskDefinition.model_validate(merged)
 
 
-def _resolve_task_model(
-    task: TaskDefinition,
-    model_keys: list[str],
-    model_dict: dict[str, str],
-    models_params: dict[str, dict[str, Any]],
-    default_api_type: str = "chat_completions",
-) -> tuple[str, dict[str, Any], str, str | None, str | None]:
-    """Resolve the final model name, settings, and per-model overrides.
-
-    Returns:
-        A tuple of ``(model_id, model_settings, api_type, endpoint, token)``
-        where *endpoint* and *token* are ``None`` when not overridden.
-
-    Raises:
-        ValueError: If task-level model_settings is not a dictionary.
-    """
-    logical_name: str = task.model or DEFAULT_MODEL
-    model_settings: dict[str, Any] = {}
-    api_type: str = default_api_type
-    endpoint: str | None = None
-    token: str | None = None
-
-    if logical_name in model_keys:
-        if logical_name in models_params:
-            model_settings = models_params[logical_name].copy()
-        logical_name = model_dict[logical_name]
-
-    # Extract engine-level keys before merging task settings
-    api_type = model_settings.pop("api_type", api_type)
-    endpoint = model_settings.pop("endpoint", None)
-    token = model_settings.pop("token", None)
-
-    task_model_settings: dict[str, Any] | Any = task.model_settings or {}
-    if not isinstance(task_model_settings, dict):
-        raise ValueError(f"model_settings in task {task.name or ''} needs to be a dictionary")
-
-    # Task-level overrides can also set engine keys
-    task_settings = dict(task_model_settings)
-    api_type = task_settings.pop("api_type", api_type)
-    endpoint = task_settings.pop("endpoint", endpoint)
-    token = task_settings.pop("token", token)
-
-    model_settings.update(task_settings)
-    return logical_name, model_settings, api_type, endpoint, token
-
-
-async def _build_prompts_to_run(
-    task_prompt: str,
-    repeat_prompt: bool,
-    last_mcp_tool_results: list[str],
-    available_tools: AvailableTools,
-    global_variables: dict[str, Any],
-    inputs: dict[str, Any],
-) -> list[str]:
-    """Build the list of prompts to execute for a task.
-
-    For regular tasks the list contains a single rendered prompt.  When
-    ``repeat_prompt`` is enabled, the last MCP tool result is parsed as an
-    iterable and a prompt is rendered for each element.
-
-    Args:
-        task_prompt: The raw or pre-rendered prompt template string.
-        repeat_prompt: Whether to expand prompts over MCP tool results.
-        last_mcp_tool_results: Mutable list of prior MCP tool result strings.
-        available_tools: Tool registry (passed through to template rendering).
-        global_variables: Global template variables.
-        inputs: Task-level input variables.
-
-    Returns:
-        List of rendered prompt strings to execute.
-
-    Raises:
-        ValueError: If the last MCP result is missing or not valid JSON.
-    """
-    prompts_to_run: list[str] = []
-    if repeat_prompt:
-        if "result" not in task_prompt.lower():
-            logging.warning("repeat_prompt enabled but no {{ result }} in prompt")
-        try:
-            last_result = json.loads(last_mcp_tool_results[-1])
-        except IndexError:
-            logging.critical("No last MCP tool result available")
-            raise
-        except json.JSONDecodeError as exc:
-            logging.critical(f"Could not parse tool result as JSON: {last_mcp_tool_results[-1][:200]}")
-            raise ValueError("Tool result is not valid JSON") from exc
-
-        text = last_result.get("text", "")
-        try:
-            iterable_result = json.loads(text)
-        except json.JSONDecodeError as exc:
-            logging.critical(f"Could not parse result text: {text}")
-            raise ValueError("Result text is not valid JSON") from exc
-        try:
-            iter(iterable_result)
-        except TypeError:
-            logging.critical("Last MCP tool result is not iterable")
-            raise
-
-        if not iterable_result:
-            await render_model_output("** 🤖❗MCP tool result iterable is empty!\n")
-        else:
-            logging.debug(f"Rendering templated prompts for results: {iterable_result}")
-            for value in iterable_result:
-                try:
-                    rendered_prompt = render_template(
-                        template_str=task_prompt,
-                        available_tools=available_tools,
-                        globals_dict=global_variables,
-                        inputs_dict=inputs,
-                        result_value=value,
-                    )
-                    prompts_to_run.append(rendered_prompt)
-                except jinja2.TemplateError as e:
-                    logging.error(f"Error rendering template for result {value}: {e}")
-                    raise ValueError(f"Template rendering failed: {e}")
-
-        # Consume only after all prompts rendered successfully so that
-        # the result remains available for retry/resume on failure.
-        last_mcp_tool_results.pop()
-    else:
-        prompts_to_run.append(task_prompt)
-    return prompts_to_run
 
 
 async def deploy_task_agents(
