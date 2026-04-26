@@ -33,6 +33,7 @@ from agents.exceptions import AgentsException, MaxTurnsExceeded
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from openai import APIConnectionError, APITimeoutError, BadRequestError, RateLimitError
 from openai.types.responses import ResponseTextDeltaEvent
+from tenacity import AsyncRetrying, retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from .agent import DEFAULT_MODEL, TaskAgent, TaskAgentHooks, TaskRunHooks
 from .available_tools import AvailableTools
@@ -235,31 +236,18 @@ async def deploy_task_agents(
         try:
             complete = False
 
+            @retry(
+                retry=retry_if_exception_type((APITimeoutError, RateLimitError)),
+                stop=stop_after_attempt(MAX_API_RETRY),
+                wait=wait_exponential(multiplier=RATE_LIMIT_BACKOFF, max=MAX_RATE_LIMIT_BACKOFF),
+                reraise=True
+            )
             async def _run_streamed() -> None:
-                max_retry = MAX_API_RETRY
-                rate_limit_backoff = RATE_LIMIT_BACKOFF
-                while rate_limit_backoff:
-                    try:
-                        result = agent0.run_streamed(prompt, max_turns=max_turns)
-                        async for event in result.stream_events():
-                            if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
-                                await render_model_output(event.data.delta, async_task=async_task, task_id=task_id)
-                        await render_model_output("\n\n", async_task=async_task, task_id=task_id)
-                        return
-                    except APITimeoutError:
-                        if not max_retry:
-                            logging.exception("Max retries for APITimeoutError reached")
-                            raise
-                        max_retry -= 1
-                    except RateLimitError:
-                        if rate_limit_backoff == MAX_RATE_LIMIT_BACKOFF:
-                            raise APITimeoutError("Max rate limit backoff reached")
-                        if rate_limit_backoff > MAX_RATE_LIMIT_BACKOFF:
-                            rate_limit_backoff = MAX_RATE_LIMIT_BACKOFF
-                        else:
-                            rate_limit_backoff += rate_limit_backoff
-                        logging.exception(f"Hit rate limit ... holding for {rate_limit_backoff}")
-                        await asyncio.sleep(rate_limit_backoff)
+                result = agent0.run_streamed(prompt, max_turns=max_turns)
+                async for event in result.stream_events():
+                    if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                        await render_model_output(event.data.delta, async_task=async_task, task_id=task_id)
+                await render_model_output("\n\n", async_task=async_task, task_id=task_id)
 
             await _run_streamed()
             complete = True
@@ -521,33 +509,35 @@ async def run_main(
                 task_complete = False
                 last_task_error: BaseException | None = None
 
-                for attempt in range(TASK_RETRY_LIMIT):
-                    try:
-                        task_complete = await run_prompts(
-                            async_task=async_task,
-                            max_concurrent_tasks=max_concurrent_tasks,
-                        )
-                        last_task_error = None
-                        break
-                    except (KeyboardInterrupt, SystemExit):
-                        raise
-                    except (APIConnectionError, APITimeoutError, ConnectionError, TimeoutError) as exc:
-                        last_task_error = exc
-                        remaining = TASK_RETRY_LIMIT - attempt - 1
-                        if remaining > 0:
-                            backoff = TASK_RETRY_BACKOFF * (attempt + 1)
-                            await render_model_output(
-                                f"** 🤖🔄 Task {task_name!r} failed: {exc}\n"
-                                f"** 🤖🔄 Retrying in {backoff}s ({remaining} attempts left)\n"
+                def before_sleep_log(retry_state):
+                    exc = retry_state.outcome.exception()
+                    attempt = retry_state.attempt_number
+                    remaining = TASK_RETRY_LIMIT - attempt
+                    backoff = retry_state.next_action.sleep
+                    msg = (
+                        f"** 🤖🔄 Task {task_name!r} failed: {exc}\n"
+                        f"** 🤖🔄 Retrying in {backoff}s ({remaining} attempts left)\n"
+                    )
+                    asyncio.create_task(render_model_output(msg))
+                    logging.warning(f"Task {task_name!r} attempt {attempt} failed: {exc}")
+
+                try:
+                    async for attempt in AsyncRetrying(
+                        retry=retry_if_exception_type((APIConnectionError, APITimeoutError, ConnectionError, TimeoutError)),
+                        stop=stop_after_attempt(TASK_RETRY_LIMIT),
+                        wait=wait_exponential(multiplier=TASK_RETRY_BACKOFF),
+                        before_sleep=before_sleep_log,
+                        reraise=True
+                    ):
+                        with attempt:
+                            task_complete = await run_prompts(
+                                async_task=async_task,
+                                max_concurrent_tasks=max_concurrent_tasks,
                             )
-                            logging.warning(f"Task {task_name!r} attempt {attempt + 1} failed: {exc}")
-                            await asyncio.sleep(backoff)
-                        else:
-                            logging.error(f"Task {task_name!r} failed after {TASK_RETRY_LIMIT} attempts: {exc}")
-                    except Exception as exc:
-                        last_task_error = exc
-                        logging.error(f"Task {task_name!r} failed (non-retriable): {exc}")
-                        break
+                            last_task_error = None
+                except Exception as exc:
+                    last_task_error = exc
+                    logging.error(f"Task {task_name!r} failed: {exc}")
 
                 # If all retries exhausted with an exception, save and re-raise
                 if last_task_error is not None:
