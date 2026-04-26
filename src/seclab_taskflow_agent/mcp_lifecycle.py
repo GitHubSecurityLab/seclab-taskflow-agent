@@ -13,7 +13,7 @@ __all__ = ["MCP_CLEANUP_TIMEOUT", "build_mcp_servers", "mcp_session_task"]
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 from agents.mcp import MCPServerSse, MCPServerStdio, MCPServerStreamableHttp, create_static_tool_filter
 
@@ -41,6 +41,80 @@ class MCPServerEntry:
         self.name = name
 
 
+# Type alias for a builder function
+MCPServerBuilder = Callable[[str, dict[str, Any], Any, int, list[str]], MCPServerEntry]
+
+MCP_TRANSPORT_REGISTRY: dict[str, MCPServerBuilder] = {}
+
+
+def register_transport(kind: str) -> Callable[[MCPServerBuilder], MCPServerBuilder]:
+    """Decorator to register an MCP transport builder."""
+    def decorator(builder: MCPServerBuilder) -> MCPServerBuilder:
+        MCP_TRANSPORT_REGISTRY[kind] = builder
+        return builder
+    return decorator
+
+
+@register_transport("stdio")
+def _build_stdio(tb: str, params: dict[str, Any], tool_filter: Any, client_session_timeout: int, confirms: list[str]) -> MCPServerEntry:
+    if params.get("reconnecting", False):
+        mcp_server = ReconnectingMCPServerStdio(
+            name=tb,
+            params=params,
+            tool_filter=tool_filter,
+            client_session_timeout_seconds=client_session_timeout,
+            cache_tools_list=True,
+        )
+    else:
+        mcp_server = MCPServerStdio(
+            name=tb,
+            params=params,
+            tool_filter=tool_filter,
+            client_session_timeout_seconds=client_session_timeout,
+            cache_tools_list=True,
+        )
+    return MCPServerEntry(MCPNamespaceWrap(confirms, mcp_server), None, name=tb)
+
+
+@register_transport("sse")
+def _build_sse(tb: str, params: dict[str, Any], tool_filter: Any, client_session_timeout: int, confirms: list[str]) -> MCPServerEntry:
+    mcp_server = MCPServerSse(
+        name=tb,
+        params=params,
+        tool_filter=tool_filter,
+        client_session_timeout_seconds=client_session_timeout,
+    )
+    return MCPServerEntry(MCPNamespaceWrap(confirms, mcp_server), None, name=tb)
+
+
+@register_transport("streamable")
+def _build_streamable(tb: str, params: dict[str, Any], tool_filter: Any, client_session_timeout: int, confirms: list[str]) -> MCPServerEntry:
+    server_proc = None
+    if "command" in params:
+
+        def _print_out(line: str) -> None:
+            logging.info(f"Streamable MCP Server stdout: {line}")
+
+        def _print_err(line: str) -> None:
+            logging.info(f"Streamable MCP Server stderr: {line}")
+
+        server_proc = StreamableMCPThread(
+            params["command"],
+            url=params["url"],
+            env=params["env"],
+            on_output=_print_out,
+            on_error=_print_err,
+        )
+    mcp_server = MCPServerStreamableHttp(
+        name=tb,
+        params=params,
+        tool_filter=tool_filter,
+        client_session_timeout_seconds=client_session_timeout,
+    )
+    return MCPServerEntry(MCPNamespaceWrap(confirms, mcp_server), server_proc, name=tb)
+
+
+
 def build_mcp_servers(
     available_tools: AvailableTools,
     toolboxes: list[str],
@@ -66,59 +140,13 @@ def build_mcp_servers(
         if headless:
             confirms = []
         client_session_timeout = client_session_timeout or DEFAULT_MCP_CLIENT_SESSION_TIMEOUT
-        server_proc = None
+        kind = params.get("kind")
+        builder = MCP_TRANSPORT_REGISTRY.get(kind)
+        if not builder:
+            raise ValueError(f"Unsupported MCP transport: {kind}")
 
-        match params["kind"]:
-            case "stdio":
-                if params.get("reconnecting", False):
-                    mcp_server = ReconnectingMCPServerStdio(
-                        name=tb,
-                        params=params,
-                        tool_filter=tool_filter,
-                        client_session_timeout_seconds=client_session_timeout,
-                        cache_tools_list=True,
-                    )
-                else:
-                    mcp_server = MCPServerStdio(
-                        name=tb,
-                        params=params,
-                        tool_filter=tool_filter,
-                        client_session_timeout_seconds=client_session_timeout,
-                        cache_tools_list=True,
-                    )
-            case "sse":
-                mcp_server = MCPServerSse(
-                    name=tb,
-                    params=params,
-                    tool_filter=tool_filter,
-                    client_session_timeout_seconds=client_session_timeout,
-                )
-            case "streamable":
-                if "command" in params:
-
-                    def _print_out(line: str) -> None:
-                        logging.info(f"Streamable MCP Server stdout: {line}")
-
-                    def _print_err(line: str) -> None:
-                        logging.info(f"Streamable MCP Server stderr: {line}")
-
-                    server_proc = StreamableMCPThread(
-                        params["command"],
-                        url=params["url"],
-                        env=params["env"],
-                        on_output=_print_out,
-                        on_error=_print_err,
-                    )
-                mcp_server = MCPServerStreamableHttp(
-                    name=tb,
-                    params=params,
-                    tool_filter=tool_filter,
-                    client_session_timeout_seconds=client_session_timeout,
-                )
-            case _:
-                raise ValueError(f"Unsupported MCP transport: {params['kind']}")
-
-        entries.append(MCPServerEntry(MCPNamespaceWrap(confirms, mcp_server), server_proc, name=tb))
+        entry = builder(tb, params, tool_filter, client_session_timeout, confirms)
+        entries.append(entry)
 
     return entries
 
