@@ -108,6 +108,10 @@ def main(
         list[str] | None,
         typer.Argument(help="Remaining prompt text."),
     ] = None,
+    model_config: Annotated[
+        str | None,
+        typer.Option("-m", "--model-config", help="Model configuration module path. Only relevant when running taskflows"),
+    ] = None,
 ) -> None:
     """Run a taskflow or personality-based agent session."""
     # Debug mode from flag or env var
@@ -158,7 +162,7 @@ def main(
         asyncio.run(
             run_main(
                 available_tools, personality, effective_taskflow,
-                cli_globals, user_prompt, resume_session_id=resume,
+                cli_globals, user_prompt, cli_model_config = model_config, resume_session_id=resume,
             ),
             debug=debug,
         )

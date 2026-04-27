@@ -490,6 +490,7 @@ async def run_main(
     taskflow_path: str | None,
     cli_globals: dict[str, str],
     prompt: str | None,
+    cli_model_config: str | None,
     resume_session_id: str | None = None,
 ) -> None:
     """Main entry point for taskflow/personality execution.
@@ -500,6 +501,7 @@ async def run_main(
         taskflow_path: Taskflow module path, or None.
         cli_globals: Global variables from CLI.
         prompt: User prompt text.
+        cli_model_config: Model configuration module path, or None.
         resume_session_id: Session ID to resume from a checkpoint.
     """
     from .session import TaskflowSession
@@ -557,6 +559,8 @@ async def run_main(
 
         # Resolve model config
         model_config_ref = taskflow_doc.model_config_ref
+        if cli_model_config:
+            model_config_ref = cli_model_config
         model_keys: list[str] = []
         model_dict: dict[str, str] = {}
         models_params: dict[str, dict[str, Any]] = {}
