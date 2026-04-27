@@ -110,7 +110,7 @@ def main(
     ] = None,
     model_config: Annotated[
         str | None,
-        typer.Option("-m", "--model-config", help="Model configuration module path. Only relevant when running taskflows"),
+        typer.Option("-m", "--model-config", help="Model configuration module path. Only relevant when running taskflows."),
     ] = None,
 ) -> None:
     """Run a taskflow or personality-based agent session."""
