@@ -41,10 +41,10 @@ from .available_tools import AvailableTools
 from .env_utils import TmpEnv
 from .mcp_lifecycle import MCP_CLEANUP_TIMEOUT, build_mcp_servers, mcp_session_task
 from .models import ModelConfigDocument, PersonalityDocument, TaskDefinition
-from .model_resolver import resolve_model_config, resolve_task_model
+from .model_resolver import resolve_model_config, _resolve_task_model
 from .mcp_prompt import mcp_system_prompt
 from .mcp_utils import compress_name, mcp_client_params
-from .prompt_builder import build_prompts_to_run
+from .prompt_builder import _build_prompts_to_run
 from .render_utils import flush_async_output, render_model_output
 from .shell_utils import shell_tool_call
 from .template_utils import render_template
@@ -239,16 +239,9 @@ async def deploy_task_agents(
         try:
             complete = False
 
-            # Decorators are applied inside the function body so that each
-            # call to deploy_task_agents gets a fresh retry state.
             @retry(
-                retry=retry_if_exception_type(RateLimitError),
+                retry=retry_if_exception_type((RateLimitError, APITimeoutError)),
                 wait=wait_exponential(multiplier=RATE_LIMIT_BACKOFF, max=MAX_RATE_LIMIT_BACKOFF),
-                stop=stop_after_attempt(MAX_API_RETRY),
-                reraise=True,
-            )
-            @retry(
-                retry=retry_if_exception_type(APITimeoutError),
                 stop=stop_after_attempt(MAX_API_RETRY),
                 reraise=True,
             )
@@ -392,7 +385,7 @@ async def run_main(
                 task = _merge_reusable_task(available_tools, task)
 
             # Resolve model (name, settings, api_type, optional endpoint/token)
-            model, model_settings, task_api_type, task_endpoint, task_token = resolve_task_model(
+            model, model_settings, task_api_type, task_endpoint, task_token = _resolve_task_model(
                 task, model_keys, model_dict, models_params, default_api_type=api_type,
             )
 
@@ -428,7 +421,7 @@ async def run_main(
                     raise ValueError(f"Failed to render prompt template: {e}") from e
 
             with TmpEnv(env, context={"globals": global_variables}):
-                prompts_to_run: list[str] = await build_prompts_to_run(
+                prompts_to_run: list[str] = await _build_prompts_to_run(
                     task_prompt, repeat_prompt, last_mcp_tool_results,
                     available_tools, global_variables, inputs,
                 )
@@ -551,6 +544,9 @@ async def run_main(
                             )
                             last_task_error = None
                 except Exception as exc:
+                    if pending_retry_msg:
+                        await render_model_output(pending_retry_msg)
+                        pending_retry_msg = None
                     last_task_error = exc
                     logging.error(f"Task {task_name!r} failed: {exc}")
 
