@@ -490,8 +490,8 @@ async def run_main(
     taskflow_path: str | None,
     cli_globals: dict[str, str],
     prompt: str | None,
-    cli_model_config: str | None,
     resume_session_id: str | None = None,
+    cli_model_config: str | None = None,
 ) -> None:
     """Main entry point for taskflow/personality execution.
 
