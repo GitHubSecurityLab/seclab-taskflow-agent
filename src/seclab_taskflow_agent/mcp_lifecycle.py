@@ -13,6 +13,7 @@ __all__ = ["MCP_CLEANUP_TIMEOUT", "build_mcp_servers", "mcp_session_task"]
 
 import asyncio
 import logging
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable
 
 from agents.mcp import MCPServerSse, MCPServerStdio, MCPServerStreamableHttp, create_static_tool_filter
@@ -114,6 +115,10 @@ def _build_streamable(tb: str, params: dict[str, Any], tool_filter: Any, client_
     return MCPServerEntry(MCPNamespaceWrap(confirms, mcp_server), server_proc, name=tb)
 
 
+# Freeze the registry after all transports are registered to prevent
+# accidental mutation in tests or at runtime.
+MCP_TRANSPORT_REGISTRY = MappingProxyType(MCP_TRANSPORT_REGISTRY)
+
 
 def build_mcp_servers(
     available_tools: AvailableTools,
@@ -141,9 +146,11 @@ def build_mcp_servers(
             confirms = []
         client_session_timeout = client_session_timeout or DEFAULT_MCP_CLIENT_SESSION_TIMEOUT
         kind = params.get("kind")
+        if kind is None:
+            raise ValueError(f"Missing 'kind' key in MCP params for toolbox {tb!r}")
         builder = MCP_TRANSPORT_REGISTRY.get(kind)
-        if not builder:
-            raise ValueError(f"Unsupported MCP transport: {kind}")
+        if builder is None:
+            raise ValueError(f"Unsupported MCP transport: {kind!r}")
 
         entry = builder(tb, params, tool_filter, client_session_timeout, confirms)
         entries.append(entry)

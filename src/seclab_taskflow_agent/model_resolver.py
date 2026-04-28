@@ -10,12 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from .agent import DEFAULT_MODEL
 from .available_tools import AvailableTools
+from .capi import get_default_model
 from .models import ModelConfigDocument, TaskDefinition
 
 
-def _resolve_model_config(
+def resolve_model_config(
     available_tools: AvailableTools,
     model_config_ref: str,
 ) -> tuple[list[str], dict[str, str], dict[str, dict[str, Any]], str]:
@@ -46,7 +46,7 @@ def _resolve_model_config(
     return model_keys, model_dict, models_params, m_config.api_type
 
 
-def _resolve_task_model(
+def resolve_task_model(
     task: TaskDefinition,
     model_keys: list[str],
     model_dict: dict[str, str],
@@ -62,7 +62,7 @@ def _resolve_task_model(
     Raises:
         ValueError: If task-level model_settings is not a dictionary.
     """
-    logical_name: str = task.model or DEFAULT_MODEL
+    logical_name: str = task.model or get_default_model()
     model_settings: dict[str, Any] = {}
     api_type: str = default_api_type
     endpoint: str | None = None

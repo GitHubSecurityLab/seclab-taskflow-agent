@@ -22,24 +22,15 @@ from agents import (
 )
 from agents.agent import FunctionToolResult, ModelSettings, ToolsToFinalOutputResult
 from agents.run import DEFAULT_MAX_TURNS
-from dotenv import find_dotenv, load_dotenv
 from openai import AsyncOpenAI
 
-from .capi import get_AI_endpoint, get_AI_token, get_provider
+from .capi import get_AI_endpoint, get_AI_token, get_default_model, get_provider
 
 __all__ = [
-    "DEFAULT_MODEL",
     "TaskAgent",
     "TaskAgentHooks",
     "TaskRunHooks",
 ]
-
-# grab our secrets from .env, this must be in .gitignore
-load_dotenv(find_dotenv(usecwd=True))
-
-api_endpoint = get_AI_endpoint()
-_default_provider = get_provider(api_endpoint)
-DEFAULT_MODEL = os.getenv("COPILOT_DEFAULT_MODEL", default=_default_provider.default_model)
 
 
 class TaskRunHooks(RunHooks):
@@ -152,7 +143,7 @@ class TaskAgent:
         handoffs: list[Any] | None = None,
         exclude_from_context: bool = False,
         mcp_servers: list[Any] | None = None,
-        model: str = DEFAULT_MODEL,
+        model: str | None = None,
         model_settings: ModelSettings | None = None,
         api_type: str = "chat_completions",
         endpoint: str | None = None,
@@ -168,7 +159,8 @@ class TaskAgent:
             token: Optional env var name whose value is used as the API key.
         """
         # Resolve per-model endpoint and token, falling back to defaults
-        resolved_endpoint = endpoint or api_endpoint
+        resolved_endpoint = endpoint or get_AI_endpoint()
+        resolved_model = model or get_default_model(resolved_endpoint)
         if token:
             resolved_token = os.getenv(token, "")
             if not resolved_token:
@@ -194,9 +186,9 @@ class TaskAgent:
 
         # Select model class based on api_type
         if api_type == "responses":
-            model_impl = OpenAIResponsesModel(model=model, openai_client=client)
+            model_impl = OpenAIResponsesModel(model=resolved_model, openai_client=client)
         else:
-            model_impl = OpenAIChatCompletionsModel(model=model, openai_client=client)
+            model_impl = OpenAIChatCompletionsModel(model=resolved_model, openai_client=client)
 
         self.agent = Agent(
             name=name,

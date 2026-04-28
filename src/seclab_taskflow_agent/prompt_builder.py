@@ -19,7 +19,7 @@ from .render_utils import render_model_output
 from .template_utils import render_template
 
 
-async def _build_prompts_to_run(
+async def build_prompts_to_run(
     task_prompt: str,
     repeat_prompt: bool,
     last_mcp_tool_results: list[str],

@@ -22,12 +22,16 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from dotenv import find_dotenv, load_dotenv
+
+load_dotenv(find_dotenv(usecwd=True))
 
 __all__ = [
     "COPILOT_INTEGRATION_ID",
     "APIProvider",
     "get_AI_endpoint",
     "get_AI_token",
+    "get_default_model",
     "get_provider",
     "list_capi_models",
     "list_tool_call_models",
@@ -172,6 +176,11 @@ def get_provider(endpoint: str | None = None) -> APIProvider:
 
     # Unknown endpoint — return a generic provider with the given base URL
     return APIProvider(name="custom", base_url=url, default_model="please-set-default-model-via-env")
+
+def get_default_model(endpoint: str | None = None) -> str:
+    """Return the default model for the given endpoint, allowing env overrides."""
+    provider = get_provider(endpoint)
+    return os.getenv("COPILOT_DEFAULT_MODEL", default=provider.default_model)
 
 
 # ---------------------------------------------------------------------------
