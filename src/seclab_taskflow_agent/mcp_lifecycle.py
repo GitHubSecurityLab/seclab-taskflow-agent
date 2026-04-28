@@ -48,7 +48,7 @@ MCPServerBuilder = Callable[[str, dict[str, Any], Any, int, list[str]], MCPServe
 MCP_TRANSPORT_REGISTRY: dict[str, MCPServerBuilder] = {}
 
 
-def register_transport(kind: str) -> Callable[[MCPServerBuilder], MCPServerBuilder]:
+def _register_transport(kind: str) -> Callable[[MCPServerBuilder], MCPServerBuilder]:
     """Decorator to register an MCP transport builder."""
     def decorator(builder: MCPServerBuilder) -> MCPServerBuilder:
         MCP_TRANSPORT_REGISTRY[kind] = builder
@@ -56,7 +56,7 @@ def register_transport(kind: str) -> Callable[[MCPServerBuilder], MCPServerBuild
     return decorator
 
 
-@register_transport("stdio")
+@_register_transport("stdio")
 def _build_stdio(tb: str, params: dict[str, Any], tool_filter: Any, client_session_timeout: int, confirms: list[str]) -> MCPServerEntry:
     if params.get("reconnecting", False):
         mcp_server = ReconnectingMCPServerStdio(
@@ -77,7 +77,7 @@ def _build_stdio(tb: str, params: dict[str, Any], tool_filter: Any, client_sessi
     return MCPServerEntry(MCPNamespaceWrap(confirms, mcp_server), None, name=tb)
 
 
-@register_transport("sse")
+@_register_transport("sse")
 def _build_sse(tb: str, params: dict[str, Any], tool_filter: Any, client_session_timeout: int, confirms: list[str]) -> MCPServerEntry:
     mcp_server = MCPServerSse(
         name=tb,
@@ -88,7 +88,7 @@ def _build_sse(tb: str, params: dict[str, Any], tool_filter: Any, client_session
     return MCPServerEntry(MCPNamespaceWrap(confirms, mcp_server), None, name=tb)
 
 
-@register_transport("streamable")
+@_register_transport("streamable")
 def _build_streamable(tb: str, params: dict[str, Any], tool_filter: Any, client_session_timeout: int, confirms: list[str]) -> MCPServerEntry:
     server_proc = None
     if "command" in params:

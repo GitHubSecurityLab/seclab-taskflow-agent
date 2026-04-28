@@ -528,9 +528,9 @@ async def run_main(
 
                 try:
                     async for attempt in AsyncRetrying(
-                        retry=retry_if_exception_type((APIConnectionError, APITimeoutError, ConnectionError, TimeoutError)),
+                        retry=retry_if_exception_type((APIConnectionError, ConnectionError, TimeoutError)),
                         stop=stop_after_attempt(TASK_RETRY_LIMIT),
-                        wait=wait_exponential(multiplier=TASK_RETRY_BACKOFF),
+                        wait=wait_exponential(multiplier=TASK_RETRY_BACKOFF, max=60),
                         before_sleep=before_sleep_log,
                         reraise=True
                     ):
