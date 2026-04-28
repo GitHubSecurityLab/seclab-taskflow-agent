@@ -33,7 +33,7 @@ from agents.exceptions import AgentsException, MaxTurnsExceeded
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from openai import APIConnectionError, APITimeoutError, BadRequestError, RateLimitError
 from openai.types.responses import ResponseTextDeltaEvent
-from tenacity import AsyncRetrying, retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import AsyncRetrying, retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 from .agent import TaskAgent, TaskAgentHooks, TaskRunHooks
 from .capi import get_default_model

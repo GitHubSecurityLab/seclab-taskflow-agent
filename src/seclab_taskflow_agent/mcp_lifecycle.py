@@ -9,11 +9,11 @@ used during taskflow execution.
 
 from __future__ import annotations
 
-__all__ = ["MCP_CLEANUP_TIMEOUT", "build_mcp_servers", "mcp_session_task"]
+__all__ = ["MCP_CLEANUP_TIMEOUT", "build_mcp_servers", "mcp_session_task", "register_transport"]
 
 import asyncio
 import logging
-from types import MappingProxyType
+
 from typing import TYPE_CHECKING, Any, Callable
 
 from agents.mcp import MCPServerSse, MCPServerStdio, MCPServerStreamableHttp, create_static_tool_filter
@@ -48,7 +48,7 @@ MCPServerBuilder = Callable[[str, dict[str, Any], Any, int, list[str]], MCPServe
 MCP_TRANSPORT_REGISTRY: dict[str, MCPServerBuilder] = {}
 
 
-def _register_transport(kind: str) -> Callable[[MCPServerBuilder], MCPServerBuilder]:
+def register_transport(kind: str) -> Callable[[MCPServerBuilder], MCPServerBuilder]:
     """Decorator to register an MCP transport builder."""
     def decorator(builder: MCPServerBuilder) -> MCPServerBuilder:
         MCP_TRANSPORT_REGISTRY[kind] = builder
@@ -56,7 +56,7 @@ def _register_transport(kind: str) -> Callable[[MCPServerBuilder], MCPServerBuil
     return decorator
 
 
-@_register_transport("stdio")
+@register_transport("stdio")
 def _build_stdio(tb: str, params: dict[str, Any], tool_filter: Any, client_session_timeout: int, confirms: list[str]) -> MCPServerEntry:
     if params.get("reconnecting", False):
         mcp_server = ReconnectingMCPServerStdio(
@@ -77,7 +77,7 @@ def _build_stdio(tb: str, params: dict[str, Any], tool_filter: Any, client_sessi
     return MCPServerEntry(MCPNamespaceWrap(confirms, mcp_server), None, name=tb)
 
 
-@_register_transport("sse")
+@register_transport("sse")
 def _build_sse(tb: str, params: dict[str, Any], tool_filter: Any, client_session_timeout: int, confirms: list[str]) -> MCPServerEntry:
     mcp_server = MCPServerSse(
         name=tb,
@@ -88,7 +88,7 @@ def _build_sse(tb: str, params: dict[str, Any], tool_filter: Any, client_session
     return MCPServerEntry(MCPNamespaceWrap(confirms, mcp_server), None, name=tb)
 
 
-@_register_transport("streamable")
+@register_transport("streamable")
 def _build_streamable(tb: str, params: dict[str, Any], tool_filter: Any, client_session_timeout: int, confirms: list[str]) -> MCPServerEntry:
     server_proc = None
     if "command" in params:
@@ -113,11 +113,6 @@ def _build_streamable(tb: str, params: dict[str, Any], tool_filter: Any, client_
         client_session_timeout_seconds=client_session_timeout,
     )
     return MCPServerEntry(MCPNamespaceWrap(confirms, mcp_server), server_proc, name=tb)
-
-
-# Freeze the registry after all transports are registered to prevent
-# accidental mutation in tests or at runtime.
-MCP_TRANSPORT_REGISTRY = MappingProxyType(MCP_TRANSPORT_REGISTRY)
 
 
 def build_mcp_servers(
