@@ -33,7 +33,7 @@ from agents.exceptions import AgentsException, MaxTurnsExceeded
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from openai import APIConnectionError, APITimeoutError, BadRequestError, RateLimitError
 from openai.types.responses import ResponseTextDeltaEvent
-from tenacity import AsyncRetrying, retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt, wait_exponential
+from tenacity import AsyncRetrying, retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from .agent import TaskAgent, TaskAgentHooks, TaskRunHooks
 from .capi import get_default_model
@@ -512,19 +512,16 @@ async def run_main(
                 task_complete = False
                 last_task_error: BaseException | None = None
 
-                pending_retry_msg: str | None = None
-
-                def before_sleep_log(retry_state):
-                    nonlocal pending_retry_msg
+                async def before_sleep_log(retry_state) -> None:
                     exc = retry_state.outcome.exception()
                     attempt = retry_state.attempt_number
                     remaining = TASK_RETRY_LIMIT - attempt
                     backoff = retry_state.next_action.sleep
-                    pending_retry_msg = (
+                    logging.warning(f"Task {task_name!r} attempt {attempt} failed: {exc}")
+                    await render_model_output(
                         f"** 🤖🔄 Task {task_name!r} failed: {exc}\n"
                         f"** 🤖🔄 Retrying in {backoff}s ({remaining} attempts left)\n"
                     )
-                    logging.warning(f"Task {task_name!r} attempt {attempt} failed: {exc}")
 
                 try:
                     async for attempt in AsyncRetrying(
@@ -535,18 +532,12 @@ async def run_main(
                         reraise=True
                     ):
                         with attempt:
-                            if pending_retry_msg:
-                                await render_model_output(pending_retry_msg)
-                                pending_retry_msg = None
                             task_complete = await run_prompts(
                                 async_task=async_task,
                                 max_concurrent_tasks=max_concurrent_tasks,
                             )
                             last_task_error = None
                 except Exception as exc:
-                    if pending_retry_msg:
-                        await render_model_output(pending_retry_msg)
-                        pending_retry_msg = None
                     last_task_error = exc
                     logging.error(f"Task {task_name!r} failed: {exc}")
 

@@ -22,9 +22,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from dotenv import find_dotenv, load_dotenv
-
-load_dotenv(find_dotenv(usecwd=True))
 
 __all__ = [
     "COPILOT_INTEGRATION_ID",

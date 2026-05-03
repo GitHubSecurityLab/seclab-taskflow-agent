@@ -51,6 +51,11 @@ MCP_TRANSPORT_REGISTRY: dict[str, MCPServerBuilder] = {}
 def register_transport(kind: str) -> Callable[[MCPServerBuilder], MCPServerBuilder]:
     """Decorator to register an MCP transport builder."""
     def decorator(builder: MCPServerBuilder) -> MCPServerBuilder:
+        if kind in MCP_TRANSPORT_REGISTRY:
+            raise ValueError(
+                f"MCP transport {kind!r} is already registered by {MCP_TRANSPORT_REGISTRY[kind].__name__!r}. "
+                "Use a unique kind name or unregister the existing builder first."
+            )
         MCP_TRANSPORT_REGISTRY[kind] = builder
         return builder
     return decorator

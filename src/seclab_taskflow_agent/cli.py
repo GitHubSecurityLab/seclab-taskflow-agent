@@ -19,6 +19,10 @@ import traceback
 from typing import Annotated
 
 import typer
+from dotenv import find_dotenv, load_dotenv
+
+# Load .env early, before any provider/env-var reads happen in imported modules.
+load_dotenv(find_dotenv(usecwd=True))
 
 from .available_tools import AvailableTools
 from .banner import get_banner

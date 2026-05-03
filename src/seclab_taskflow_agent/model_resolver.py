@@ -62,28 +62,35 @@ def resolve_task_model(
     Raises:
         ValueError: If task-level model_settings is not a dictionary.
     """
-    logical_name: str = task.model or get_default_model()
     model_settings: dict[str, Any] = {}
     api_type: str = default_api_type
     endpoint: str | None = None
     token: str | None = None
 
+    # Step 1: Peek at task-level settings to extract the endpoint override
+    # *before* resolving the default model, so get_default_model() receives
+    # the correct endpoint and picks the right provider's default model.
+    task_model_settings: dict[str, Any] | Any = task.model_settings or {}
+    if not isinstance(task_model_settings, dict):
+        raise ValueError(f"model_settings in task {task.name or ''} needs to be a dictionary")
+    task_settings = dict(task_model_settings)
+    preliminary_endpoint: str | None = task_settings.get("endpoint", None)
+
+    # Step 2: Resolve the logical model name, using the endpoint-aware default
+    logical_name: str = task.model or get_default_model(preliminary_endpoint)
+
+    # Step 3: Look up config-level settings for this logical name
     if logical_name in model_keys:
         if logical_name in models_params:
             model_settings = models_params[logical_name].copy()
         logical_name = model_dict[logical_name]
 
-    # Extract engine-level keys before merging task settings
+    # Step 4: Extract engine-level keys from config settings
     api_type = model_settings.pop("api_type", api_type)
     endpoint = model_settings.pop("endpoint", None)
     token = model_settings.pop("token", None)
 
-    task_model_settings: dict[str, Any] | Any = task.model_settings or {}
-    if not isinstance(task_model_settings, dict):
-        raise ValueError(f"model_settings in task {task.name or ''} needs to be a dictionary")
-
-    # Task-level overrides can also set engine keys
-    task_settings = dict(task_model_settings)
+    # Step 5: Apply task-level overrides (task wins over config)
     api_type = task_settings.pop("api_type", api_type)
     endpoint = task_settings.pop("endpoint", endpoint)
     token = task_settings.pop("token", token)
