@@ -267,6 +267,9 @@ async def deploy_task_agents(
         except APITimeoutError as e:
             await render_model_output(f"** 🤖❗ Timeout Error: {e}\n", async_task=async_task, task_id=task_id)
             logging.exception("API Timeout")
+        except RateLimitError as e:
+            await render_model_output(f"** 🤖❗ Rate Limit Error: {e}\n", async_task=async_task, task_id=task_id)
+            logging.exception("Rate limit exceeded after retries")
 
         if async_task:
             await flush_async_output(task_id)
@@ -525,7 +528,7 @@ async def run_main(
 
                 try:
                     async for attempt in AsyncRetrying(
-                        retry=retry_if_exception_type((APIConnectionError, ConnectionError, TimeoutError)),
+                        retry=retry_if_exception_type((APIConnectionError, APITimeoutError, RateLimitError, ConnectionError, TimeoutError)),
                         stop=stop_after_attempt(TASK_RETRY_LIMIT),
                         wait=wait_exponential(multiplier=TASK_RETRY_BACKOFF, max=60),
                         before_sleep=before_sleep_log,
