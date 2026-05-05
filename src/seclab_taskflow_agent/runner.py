@@ -40,7 +40,7 @@ from .capi import get_default_model
 from .available_tools import AvailableTools
 from .env_utils import TmpEnv
 from .mcp_lifecycle import MCP_CLEANUP_TIMEOUT, build_mcp_servers, mcp_session_task
-from .models import ModelConfigDocument, PersonalityDocument, TaskDefinition
+from .models import PersonalityDocument, TaskDefinition
 from .model_resolver import resolve_model_config, resolve_task_model
 from .mcp_prompt import mcp_system_prompt
 from .mcp_utils import compress_name, mcp_client_params

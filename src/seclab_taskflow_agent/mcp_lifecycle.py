@@ -54,7 +54,7 @@ def register_transport(kind: str) -> Callable[[MCPServerBuilder], MCPServerBuild
         if kind in MCP_TRANSPORT_REGISTRY:
             raise ValueError(
                 f"MCP transport {kind!r} is already registered by {MCP_TRANSPORT_REGISTRY[kind].__name__!r}. "
-                "Use a unique kind name or unregister the existing builder first."
+                "Use a unique kind name."
             )
         MCP_TRANSPORT_REGISTRY[kind] = builder
         return builder

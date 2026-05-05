@@ -240,7 +240,7 @@ class TestResolveTaskModel:
         assert settings["temperature"] == 0.5
 
     def test_default_model_when_empty(self):
-        """Empty model string falls back to DEFAULT_MODEL."""
+        """Empty model string falls back to the provider default model."""
         from seclab_taskflow_agent.capi import get_default_model
 
         model_id, _, _, _, _ = resolve_task_model(
