@@ -175,6 +175,12 @@ def mcp_client_params(
                             logging.critical(e)
                             logging.info("Assuming toolbox has default configuration available")
                             del env[k]
+                    # Inherit proxy env vars from parent so HTTP clients
+                    # work correctly inside network-isolated environments (AWF)
+                    for proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+                                      "http_proxy", "https_proxy", "no_proxy"):
+                        if proxy_var not in env and proxy_var in os.environ:
+                            env[proxy_var] = os.environ[proxy_var]
                 logging.debug(f"Tool call environment: {env}")
                 if args:
                     for i, v in enumerate(args):
