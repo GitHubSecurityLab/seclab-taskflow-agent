@@ -123,3 +123,26 @@ class TestGetProvider:
         assert p.name == "custom"
         assert p.base_url == "https://my-custom-llm.example.com/v1/"
         assert not p.extra_headers
+
+    def test_awf_proxy_bare_hostname(self, monkeypatch):
+        monkeypatch.setenv("AWF_COPILOT_PROXY", "api.githubcopilot.com")
+        p = get_provider("http://172.30.0.30:10002")
+        assert p.name == "copilot"
+        assert p.base_url == "http://172.30.0.30:10002/"
+        assert p.default_model == "gpt-4.1"
+        assert "Copilot-Integration-Id" in p.extra_headers
+
+    def test_awf_proxy_full_url(self, monkeypatch):
+        monkeypatch.setenv("AWF_COPILOT_PROXY", "https://api.githubcopilot.com")
+        p = get_provider("http://172.30.0.30:10002")
+        assert p.name == "copilot"
+        assert p.base_url == "http://172.30.0.30:10002/"
+
+    def test_awf_proxy_unknown_upstream(self, monkeypatch):
+        monkeypatch.setenv("AWF_COPILOT_PROXY", "not-a-real-provider.com")
+        p = get_provider("http://172.30.0.30:10002")
+        assert p.name == "custom"
+
+    def test_awf_proxy_not_set(self):
+        p = get_provider("http://172.30.0.30:10002")
+        assert p.name == "custom"
