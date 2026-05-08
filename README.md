@@ -24,23 +24,23 @@ You can find a detailed overview of the taskflow grammar [here](doc/GRAMMAR.md) 
 ```
 ┌─────────────────────────────────────────────────────┐
 │                   CLI (cli.py)                      │
-│  Typer-based entry point: -p, -t, -l, -g, --resume │
+│  Typer-based entry point: -p, -t, -l, -g, --resume  │
 └─────────────────────┬───────────────────────────────┘
                       │
 ┌─────────────────────▼───────────────────────────────┐
-│              Runner (runner.py)                      │
-│  Taskflow execution loop, model resolution,          │
-│  template rendering, session checkpointing           │
+│              Runner (runner.py)                     │
+│  Taskflow execution loop, model resolution,         │
+│  template rendering, session checkpointing          │
 └─────────────────────┬───────────────────────────────┘
                       │
 ┌─────────────────────▼───────────────────────────────┐
-│          MCP Lifecycle (mcp_lifecycle.py)            │
-│  Server connection, cleanup, process management      │
+│          MCP Lifecycle (mcp_lifecycle.py)           │
+│  Server connection, cleanup, process management     │
 └─────────────────────┬───────────────────────────────┘
                       │
 ┌─────────────────────▼───────────────────────────────┐
-│            Agent (agent.py)                          │
-│  TaskAgent wrapper, hooks, OpenAI Agents SDK bridge  │
+│            Agent (agent.py)                         │
+│  TaskAgent wrapper, hooks, OpenAI Agents SDK bridge │
 └─────────────────────────────────────────────────────┘
 
 Supporting modules:
