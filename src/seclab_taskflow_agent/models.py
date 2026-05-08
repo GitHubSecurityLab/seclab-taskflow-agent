@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # Valid API type values for model configuration.
 ApiType = Literal["chat_completions", "responses"]
 
-# Valid backend names. Must stay in sync with sdk.base.BackendName.
+# Valid backend names. Must stay in sync with ``sdk._KNOWN``.
 BackendSdk = Literal["openai_agents", "copilot_sdk"]
 
 

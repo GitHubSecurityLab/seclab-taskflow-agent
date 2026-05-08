@@ -21,7 +21,6 @@ __all__ = [
     "resolve_backend_name",
 ]
 
-import contextlib
 import os
 
 from .base import (
@@ -61,20 +60,18 @@ def resolve_backend_name(
 ) -> str:
     """Pick the backend to use for a run.
 
-    Precedence: ``explicit`` > ``SECLAB_TASKFLOW_BACKEND`` env var >
-    endpoint auto-default (Copilot endpoint prefers ``copilot_sdk`` when
-    the optional dependency is installed) > ``openai_agents``.
+    Precedence: ``explicit`` (from model config ``backend:`` field) >
+    ``SECLAB_TASKFLOW_BACKEND`` env var > ``openai_agents``.
+
+    Backend selection is always deterministic — there is no auto-detection
+    based on endpoint URL.  Use ``backend: copilot_sdk`` in model config
+    or set ``SECLAB_TASKFLOW_BACKEND=copilot_sdk`` to opt in.
+
+    The *endpoint* parameter is accepted for forward compatibility but
+    is not used for backend selection.
     """
-    name = explicit or os.getenv(_ENV_VAR)
-    # lgtm[py/incomplete-url-substring-sanitization]
-    # Endpoint is trusted operator config (YAML `endpoint:` / CAPI env),
-    # not attacker-controlled input; this is a startup dispatch hint,
-    # not a security boundary.
-    if not name and endpoint and "api.githubcopilot.com" in endpoint:
-        with contextlib.suppress(ImportError):
-            __import__("copilot")
-            name = "copilot_sdk"
-    name = name or "openai_agents"
+    del endpoint  # reserved for forward compat; not used for selection
+    name = explicit or os.getenv(_ENV_VAR) or "openai_agents"
     if name not in _KNOWN:
         raise ValueError(f"Unknown backend {name!r}. Known: {_KNOWN}")
     return name

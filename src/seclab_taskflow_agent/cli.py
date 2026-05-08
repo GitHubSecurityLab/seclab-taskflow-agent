@@ -177,6 +177,7 @@ def main(
     # Responses API + MCP combination), which blocks the interpreter
     # from returning even after asyncio.run() completes. Tests that
     # invoke run_main() directly never hit this path.
+    logging.shutdown()
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(exit_code)

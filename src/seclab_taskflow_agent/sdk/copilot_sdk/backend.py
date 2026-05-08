@@ -41,9 +41,15 @@ class _CopilotHandle:
 
 
 def _resolve_token(token_env: str | None) -> str | None:
+    """Resolve a token from an environment variable name.
+
+    Returns the env var's value, or ``None`` if the var is unset/empty.
+    Never returns the env var *name* itself — that would send a literal
+    string like ``"AI_API_TOKEN"`` as a bearer token.
+    """
     if not token_env:
         return None
-    return os.getenv(token_env) or token_env
+    return os.getenv(token_env) or None
 
 
 def _normalize_model(model: str) -> str:
