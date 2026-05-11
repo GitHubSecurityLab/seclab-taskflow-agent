@@ -5,11 +5,12 @@
 
 The Copilot SDK requires every session to provide an
 ``on_permission_request`` callback. The taskflow YAML exposes a single
-policy knob, ``blocked_tools``: any tool whose name (or canonicalised
-command/path/url) appears in that list is denied; everything else is
-approved. The ``headless`` flag is accepted for signature parity with
-the openai-agents path but is unused — the runner never has a TTY, so
-there is no interactive fallback to prompt for.
+policy knob, ``blocked_tools``: any tool whose name or raw
+command/path/url appears in that list is denied (exact string match);
+everything else is approved. The ``headless`` flag is accepted for
+signature parity with the openai-agents path but is unused — the
+runner never has a TTY, so there is no interactive fallback to prompt
+for.
 """
 
 from __future__ import annotations
