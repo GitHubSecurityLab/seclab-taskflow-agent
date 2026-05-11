@@ -180,7 +180,6 @@ def main(
     logging.shutdown()
     sys.stdout.flush()
     sys.stderr.flush()
-    logging.shutdown()
     os._exit(exit_code)
 
 
