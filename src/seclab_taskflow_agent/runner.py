@@ -703,8 +703,8 @@ async def run_main(
 
                     complete = True
                     for result in task_results:
-                        if isinstance(result, Exception):
-                            logging.error(f"Caught exception in Gather: {result}")
+                        if not isinstance(result, bool):
+                            logging.error(f"Caught exception in Gather: {result}", exc_info=result)
                             result = False
                         complete = result and complete
                     return complete
