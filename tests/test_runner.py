@@ -20,10 +20,10 @@ from seclab_taskflow_agent.models import (
     TaskWrapper,
 )
 from seclab_taskflow_agent.runner import (
-    _build_prompts_to_run,
+    build_prompts_to_run,
     _merge_reusable_task,
-    _resolve_model_config,
-    _resolve_task_model,
+    resolve_model_config,
+    resolve_task_model,
 )
 
 
@@ -80,7 +80,7 @@ class TestResolveModelConfig:
         at.get_model_config.return_value = _make_model_config(
             models={"fast": "gpt-4o-mini", "smart": "gpt-4o"},
         )
-        keys, mdict, params, api_type = _resolve_model_config(at, "ref")
+        keys, mdict, params, api_type = resolve_model_config(at, "ref")
         assert set(keys) == {"fast", "smart"}
         assert mdict == {"fast": "gpt-4o-mini", "smart": "gpt-4o"}
         assert params == {}
@@ -93,7 +93,7 @@ class TestResolveModelConfig:
             models={"m1": "provider-model"},
             api_type="responses",
         )
-        _, _, _, api_type = _resolve_model_config(at, "ref")
+        _, _, _, api_type = resolve_model_config(at, "ref")
         assert api_type == "responses"
 
     def test_model_settings_extraction(self):
@@ -103,7 +103,7 @@ class TestResolveModelConfig:
             models={"m1": "provider-m1"},
             model_settings={"m1": {"temperature": 0.5}},
         )
-        _, _, params, _ = _resolve_model_config(at, "ref")
+        _, _, params, _ = resolve_model_config(at, "ref")
         assert params == {"m1": {"temperature": 0.5}}
 
     def test_validation_error_on_non_dict_settings(self):
@@ -186,7 +186,7 @@ class TestResolveTaskModel:
 
     def test_logical_name_mapped_to_provider_id(self):
         """A logical model name is resolved to the provider model ID."""
-        model_id, _, _, _, _ = _resolve_task_model(
+        model_id, _, _, _, _ = resolve_task_model(
             TaskDefinition(model="fast"),
             model_keys=["fast"],
             model_dict={"fast": "gpt-4o-mini"},
@@ -196,7 +196,7 @@ class TestResolveTaskModel:
 
     def test_model_settings_from_config(self):
         """Settings from models_params are included in the result."""
-        _, settings, _, _, _ = _resolve_task_model(
+        _, settings, _, _, _ = resolve_task_model(
             TaskDefinition(model="fast"),
             model_keys=["fast"],
             model_dict={"fast": "gpt-4o-mini"},
@@ -207,7 +207,7 @@ class TestResolveTaskModel:
 
     def test_task_level_settings_override_config(self):
         """Task-level model_settings override config-level settings."""
-        _, settings, _, _, _ = _resolve_task_model(
+        _, settings, _, _, _ = resolve_task_model(
             TaskDefinition(model="fast", model_settings={"temperature": 0.2}),
             model_keys=["fast"],
             model_dict={"fast": "gpt-4o-mini"},
@@ -218,7 +218,7 @@ class TestResolveTaskModel:
 
     def test_engine_keys_extracted(self):
         """Engine keys (api_type, endpoint, token) are popped from settings."""
-        _, settings, api_type, endpoint, token = _resolve_task_model(
+        _, settings, api_type, endpoint, token = resolve_task_model(
             TaskDefinition(model="fast"),
             model_keys=["fast"],
             model_dict={"fast": "gpt-4o-mini"},
@@ -240,20 +240,20 @@ class TestResolveTaskModel:
         assert settings["temperature"] == 0.5
 
     def test_default_model_when_empty(self):
-        """Empty model string falls back to DEFAULT_MODEL."""
-        from seclab_taskflow_agent.agent import DEFAULT_MODEL
+        """Empty model string falls back to the provider default model."""
+        from seclab_taskflow_agent.capi import get_default_model
 
-        model_id, _, _, _, _ = _resolve_task_model(
+        model_id, _, _, _, _ = resolve_task_model(
             TaskDefinition(model=""),
             model_keys=[],
             model_dict={},
             models_params={},
         )
-        assert model_id == DEFAULT_MODEL
+        assert model_id == get_default_model()
 
     def test_model_not_in_keys_passes_through(self):
         """A model name not in model_keys passes through as-is."""
-        model_id, _, _, _, _ = _resolve_task_model(
+        model_id, _, _, _, _ = resolve_task_model(
             TaskDefinition(model="claude-3-opus"),
             model_keys=["fast", "smart"],
             model_dict={"fast": "gpt-4o-mini", "smart": "gpt-4o"},
@@ -263,7 +263,7 @@ class TestResolveTaskModel:
 
     def test_task_engine_keys_override_config(self):
         """Task-level model_settings can override engine keys from config."""
-        _, _, api_type, endpoint, token = _resolve_task_model(
+        _, _, api_type, endpoint, token = resolve_task_model(
             TaskDefinition(
                 model="fast",
                 model_settings={"api_type": "responses", "endpoint": "https://task.api"},
@@ -291,13 +291,13 @@ class TestBuildPromptsToRun:
     @staticmethod
     def _run(coro):
         """Run an async coroutine with render_model_output mocked out."""
-        with patch("seclab_taskflow_agent.runner.render_model_output", new_callable=AsyncMock):
+        with patch("seclab_taskflow_agent.prompt_builder.render_model_output", new_callable=AsyncMock):
             return asyncio.run(coro)
 
     def test_non_repeat_returns_single_prompt(self):
         """Without repeat_prompt, the original prompt is returned as-is."""
         result = self._run(
-            _build_prompts_to_run(
+            build_prompts_to_run(
                 task_prompt="hello world",
                 repeat_prompt=False,
                 last_mcp_tool_results=[],
@@ -313,7 +313,7 @@ class TestBuildPromptsToRun:
         items = [{"name": "apple"}, {"name": "banana"}]
         results = [self._result_entry(items)]
         prompts = self._run(
-            _build_prompts_to_run(
+            build_prompts_to_run(
                 task_prompt="Process {{ result.name }}",
                 repeat_prompt=True,
                 last_mcp_tool_results=results,
@@ -331,7 +331,7 @@ class TestBuildPromptsToRun:
         data = {"a": 1, "b": 2}
         results = [self._result_entry(data)]
         prompts = self._run(
-            _build_prompts_to_run(
+            build_prompts_to_run(
                 task_prompt="Key: {{ result }}",
                 repeat_prompt=True,
                 last_mcp_tool_results=results,
@@ -346,7 +346,7 @@ class TestBuildPromptsToRun:
         """repeat_prompt with an empty list renders no prompts."""
         results = [self._result_entry([])]
         prompts = self._run(
-            _build_prompts_to_run(
+            build_prompts_to_run(
                 task_prompt="Process {{ result }}",
                 repeat_prompt=True,
                 last_mcp_tool_results=results,
@@ -361,7 +361,7 @@ class TestBuildPromptsToRun:
         """IndexError when last_mcp_tool_results is empty."""
         with pytest.raises(IndexError):
             self._run(
-                _build_prompts_to_run(
+                build_prompts_to_run(
                     task_prompt="Process {{ result }}",
                     repeat_prompt=True,
                     last_mcp_tool_results=[],
@@ -376,7 +376,7 @@ class TestBuildPromptsToRun:
         results = [json.dumps({"text": "not json!!"})]
         with pytest.raises(ValueError, match="not valid JSON"):
             self._run(
-                _build_prompts_to_run(
+                build_prompts_to_run(
                     task_prompt="Process {{ result }}",
                     repeat_prompt=True,
                     last_mcp_tool_results=results,
@@ -393,7 +393,7 @@ class TestBuildPromptsToRun:
         original_len = len(results)
 
         self._run(
-            _build_prompts_to_run(
+            build_prompts_to_run(
                 task_prompt="Process {{ result.name }}",
                 repeat_prompt=True,
                 last_mcp_tool_results=results,
@@ -411,11 +411,11 @@ class TestBuildPromptsToRun:
         results = [self._result_entry(items)]
 
         with patch(
-            "seclab_taskflow_agent.runner.render_template",
+            "seclab_taskflow_agent.prompt_builder.render_template",
             side_effect=Exception("template boom"),
         ), pytest.raises(Exception, match="template boom"):
             self._run(
-                _build_prompts_to_run(
+                build_prompts_to_run(
                     task_prompt="Process {{ result.name }}",
                     repeat_prompt=True,
                     last_mcp_tool_results=results,
@@ -432,7 +432,7 @@ class TestBuildPromptsToRun:
         results = [self._result_entry(42)]
         with pytest.raises(TypeError):
             self._run(
-                _build_prompts_to_run(
+                build_prompts_to_run(
                     task_prompt="Process {{ result }}",
                     repeat_prompt=True,
                     last_mcp_tool_results=results,

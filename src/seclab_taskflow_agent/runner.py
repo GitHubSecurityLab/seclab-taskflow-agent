@@ -33,14 +33,18 @@ from agents.exceptions import AgentsException, MaxTurnsExceeded
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from openai import APIConnectionError, APITimeoutError, BadRequestError, RateLimitError
 from openai.types.responses import ResponseTextDeltaEvent
+from tenacity import AsyncRetrying, retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from .agent import DEFAULT_MODEL, TaskAgent, TaskAgentHooks, TaskRunHooks
+from .agent import TaskAgent, TaskAgentHooks, TaskRunHooks
+from .capi import get_default_model
 from .available_tools import AvailableTools
 from .env_utils import TmpEnv
 from .mcp_lifecycle import MCP_CLEANUP_TIMEOUT, build_mcp_servers, mcp_session_task
-from .models import ModelConfigDocument, PersonalityDocument, TaskDefinition
+from .models import PersonalityDocument, TaskDefinition
+from .model_resolver import resolve_model_config, resolve_task_model
 from .mcp_prompt import mcp_system_prompt
 from .mcp_utils import compress_name, mcp_client_params
+from .prompt_builder import build_prompts_to_run
 from .render_utils import flush_async_output, render_model_output
 from .shell_utils import shell_tool_call
 from .template_utils import render_template
@@ -53,35 +57,6 @@ TASK_RETRY_LIMIT = 3  # Maximum retry attempts for a failed task
 TASK_RETRY_BACKOFF = 10  # Initial backoff in seconds between task retries
 
 
-def _resolve_model_config(
-    available_tools: AvailableTools,
-    model_config_ref: str,
-) -> tuple[list[str], dict[str, str], dict[str, dict[str, Any]], str]:
-    """Load and validate the model configuration file.
-
-    Args:
-        available_tools: Tool registry used to load the config file.
-        model_config_ref: Reference name for the model config document.
-
-    Returns:
-        A tuple of (model_keys, model_dict, models_params, api_type) where
-        model_keys is the list of logical model names, model_dict maps them
-        to provider model IDs, models_params holds per-model settings, and
-        api_type is ``"chat_completions"`` or ``"responses"``.
-
-    Raises:
-        ValueError: If the config file has structural problems.
-    """
-    m_config: ModelConfigDocument = available_tools.get_model_config(model_config_ref)
-    model_dict: dict[str, str] = m_config.models or {}
-    model_keys: list[str] = list(model_dict.keys())
-    models_params: dict[str, dict[str, Any]] = m_config.model_settings or {}
-    unknown = set(models_params) - set(model_keys)
-    if unknown:
-        raise ValueError(
-            f"Settings section of model_config file {model_config_ref} contains models not in the model section: {unknown}"
-        )
-    return model_keys, model_dict, models_params, m_config.api_type
 
 
 def _merge_reusable_task(
@@ -113,129 +88,6 @@ def _merge_reusable_task(
     return TaskDefinition.model_validate(merged)
 
 
-def _resolve_task_model(
-    task: TaskDefinition,
-    model_keys: list[str],
-    model_dict: dict[str, str],
-    models_params: dict[str, dict[str, Any]],
-    default_api_type: str = "chat_completions",
-) -> tuple[str, dict[str, Any], str, str | None, str | None]:
-    """Resolve the final model name, settings, and per-model overrides.
-
-    Returns:
-        A tuple of ``(model_id, model_settings, api_type, endpoint, token)``
-        where *endpoint* and *token* are ``None`` when not overridden.
-
-    Raises:
-        ValueError: If task-level model_settings is not a dictionary.
-    """
-    logical_name: str = task.model or DEFAULT_MODEL
-    model_settings: dict[str, Any] = {}
-    api_type: str = default_api_type
-    endpoint: str | None = None
-    token: str | None = None
-
-    if logical_name in model_keys:
-        if logical_name in models_params:
-            model_settings = models_params[logical_name].copy()
-        logical_name = model_dict[logical_name]
-
-    # Extract engine-level keys before merging task settings
-    api_type = model_settings.pop("api_type", api_type)
-    endpoint = model_settings.pop("endpoint", None)
-    token = model_settings.pop("token", None)
-
-    task_model_settings: dict[str, Any] | Any = task.model_settings or {}
-    if not isinstance(task_model_settings, dict):
-        raise ValueError(f"model_settings in task {task.name or ''} needs to be a dictionary")
-
-    # Task-level overrides can also set engine keys
-    task_settings = dict(task_model_settings)
-    api_type = task_settings.pop("api_type", api_type)
-    endpoint = task_settings.pop("endpoint", endpoint)
-    token = task_settings.pop("token", token)
-
-    model_settings.update(task_settings)
-    return logical_name, model_settings, api_type, endpoint, token
-
-
-async def _build_prompts_to_run(
-    task_prompt: str,
-    repeat_prompt: bool,
-    last_mcp_tool_results: list[str],
-    available_tools: AvailableTools,
-    global_variables: dict[str, Any],
-    inputs: dict[str, Any],
-) -> list[str]:
-    """Build the list of prompts to execute for a task.
-
-    For regular tasks the list contains a single rendered prompt.  When
-    ``repeat_prompt`` is enabled, the last MCP tool result is parsed as an
-    iterable and a prompt is rendered for each element.
-
-    Args:
-        task_prompt: The raw or pre-rendered prompt template string.
-        repeat_prompt: Whether to expand prompts over MCP tool results.
-        last_mcp_tool_results: Mutable list of prior MCP tool result strings.
-        available_tools: Tool registry (passed through to template rendering).
-        global_variables: Global template variables.
-        inputs: Task-level input variables.
-
-    Returns:
-        List of rendered prompt strings to execute.
-
-    Raises:
-        ValueError: If the last MCP result is missing or not valid JSON.
-    """
-    prompts_to_run: list[str] = []
-    if repeat_prompt:
-        if "result" not in task_prompt.lower():
-            logging.warning("repeat_prompt enabled but no {{ result }} in prompt")
-        try:
-            last_result = json.loads(last_mcp_tool_results[-1])
-        except IndexError:
-            logging.critical("No last MCP tool result available")
-            raise
-        except json.JSONDecodeError as exc:
-            logging.critical(f"Could not parse tool result as JSON: {last_mcp_tool_results[-1][:200]}")
-            raise ValueError("Tool result is not valid JSON") from exc
-
-        text = last_result.get("text", "")
-        try:
-            iterable_result = json.loads(text)
-        except json.JSONDecodeError as exc:
-            logging.critical(f"Could not parse result text: {text}")
-            raise ValueError("Result text is not valid JSON") from exc
-        try:
-            iter(iterable_result)
-        except TypeError:
-            logging.critical("Last MCP tool result is not iterable")
-            raise
-
-        if not iterable_result:
-            await render_model_output("** 🤖❗MCP tool result iterable is empty!\n")
-        else:
-            logging.debug(f"Rendering templated prompts for results: {iterable_result}")
-            for value in iterable_result:
-                try:
-                    rendered_prompt = render_template(
-                        template_str=task_prompt,
-                        available_tools=available_tools,
-                        globals_dict=global_variables,
-                        inputs_dict=inputs,
-                        result_value=value,
-                    )
-                    prompts_to_run.append(rendered_prompt)
-                except jinja2.TemplateError as e:
-                    logging.error(f"Error rendering template for result {value}: {e}")
-                    raise ValueError(f"Template rendering failed: {e}")
-
-        # Consume only after all prompts rendered successfully so that
-        # the result remains available for retry/resume on failure.
-        last_mcp_tool_results.pop()
-    else:
-        prompts_to_run.append(task_prompt)
-    return prompts_to_run
 
 
 async def deploy_task_agents(
@@ -249,7 +101,7 @@ async def deploy_task_agents(
     headless: bool = False,
     exclude_from_context: bool = False,
     max_turns: int = DEFAULT_MAX_TURNS,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
     model_par: dict[str, Any] | None = None,
     api_type: str = "chat_completions",
     endpoint: str | None = None,
@@ -274,10 +126,12 @@ async def deploy_task_agents(
     toolboxes_override = toolboxes_override or []
     blocked_tools = blocked_tools or []
 
+    resolved_model = model or get_default_model(endpoint)
+
     task_id = str(uuid.uuid4())
     await render_model_output(f"** 🤖💪 Deploying Task Flow Agent(s): {list(agents.keys())}\n")
     await render_model_output(f"** 🤖💪 Task ID : {task_id}\n")
-    await render_model_output(f"** 🤖💪 Model   : {model}{', params: ' + str(model_par) if model_par else ''}\n")
+    await render_model_output(f"** 🤖💪 Model   : {resolved_model}{', params: ' + str(model_par) if model_par else ''}\n")
     if endpoint:
         await render_model_output(f"** 🤖💪 Endpoint: {endpoint}\n")
 
@@ -348,7 +202,7 @@ async def deploy_task_agents(
                     handoffs=[],
                     exclude_from_context=exclude_from_context,
                     mcp_servers=[e.server for e in entries],
-                    model=model,
+                    model=resolved_model,
                     model_settings=model_settings,
                     api_type=api_type,
                     endpoint=endpoint,
@@ -373,7 +227,7 @@ async def deploy_task_agents(
             handoffs=handoffs,
             exclude_from_context=exclude_from_context,
             mcp_servers=[e.server for e in entries],
-            model=model,
+            model=resolved_model,
             model_settings=model_settings,
             api_type=api_type,
             endpoint=endpoint,
@@ -385,31 +239,18 @@ async def deploy_task_agents(
         try:
             complete = False
 
+            @retry(
+                retry=retry_if_exception_type((RateLimitError, APITimeoutError)),
+                wait=wait_exponential(multiplier=RATE_LIMIT_BACKOFF, max=MAX_RATE_LIMIT_BACKOFF),
+                stop=stop_after_attempt(MAX_API_RETRY),
+                reraise=True,
+            )
             async def _run_streamed() -> None:
-                max_retry = MAX_API_RETRY
-                rate_limit_backoff = RATE_LIMIT_BACKOFF
-                while rate_limit_backoff:
-                    try:
-                        result = agent0.run_streamed(prompt, max_turns=max_turns)
-                        async for event in result.stream_events():
-                            if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
-                                await render_model_output(event.data.delta, async_task=async_task, task_id=task_id)
-                        await render_model_output("\n\n", async_task=async_task, task_id=task_id)
-                        return
-                    except APITimeoutError:
-                        if not max_retry:
-                            logging.exception("Max retries for APITimeoutError reached")
-                            raise
-                        max_retry -= 1
-                    except RateLimitError:
-                        if rate_limit_backoff == MAX_RATE_LIMIT_BACKOFF:
-                            raise APITimeoutError("Max rate limit backoff reached")
-                        if rate_limit_backoff > MAX_RATE_LIMIT_BACKOFF:
-                            rate_limit_backoff = MAX_RATE_LIMIT_BACKOFF
-                        else:
-                            rate_limit_backoff += rate_limit_backoff
-                        logging.exception(f"Hit rate limit ... holding for {rate_limit_backoff}")
-                        await asyncio.sleep(rate_limit_backoff)
+                result = agent0.run_streamed(prompt, max_turns=max_turns)
+                async for event in result.stream_events():
+                    if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                        await render_model_output(event.data.delta, async_task=async_task, task_id=task_id)
+                await render_model_output("\n\n", async_task=async_task, task_id=task_id)
 
             await _run_streamed()
             complete = True
@@ -426,6 +267,9 @@ async def deploy_task_agents(
         except APITimeoutError as e:
             await render_model_output(f"** 🤖❗ Timeout Error: {e}\n", async_task=async_task, task_id=task_id)
             logging.exception("API Timeout")
+        except RateLimitError as e:
+            await render_model_output(f"** 🤖❗ Rate Limit Error: {e}\n", async_task=async_task, task_id=task_id)
+            logging.exception("Rate limit exceeded after retries")
 
         if async_task:
             await flush_async_output(task_id)
@@ -516,7 +360,7 @@ async def run_main(
         models_params: dict[str, dict[str, Any]] = {}
         api_type: str = "chat_completions"
         if model_config_ref:
-            model_keys, model_dict, models_params, api_type = _resolve_model_config(available_tools, model_config_ref)
+            model_keys, model_dict, models_params, api_type = resolve_model_config(available_tools, model_config_ref)
 
         # Create session if this is a new run (not personality mode)
         if session is None:
@@ -544,7 +388,7 @@ async def run_main(
                 task = _merge_reusable_task(available_tools, task)
 
             # Resolve model (name, settings, api_type, optional endpoint/token)
-            model, model_settings, task_api_type, task_endpoint, task_token = _resolve_task_model(
+            model, model_settings, task_api_type, task_endpoint, task_token = resolve_task_model(
                 task, model_keys, model_dict, models_params, default_api_type=api_type,
             )
 
@@ -580,7 +424,7 @@ async def run_main(
                     raise ValueError(f"Failed to render prompt template: {e}") from e
 
             with TmpEnv(env, context={"globals": global_variables}):
-                prompts_to_run: list[str] = await _build_prompts_to_run(
+                prompts_to_run: list[str] = await build_prompts_to_run(
                     task_prompt, repeat_prompt, last_mcp_tool_results,
                     available_tools, global_variables, inputs,
                 )
@@ -671,33 +515,34 @@ async def run_main(
                 task_complete = False
                 last_task_error: BaseException | None = None
 
-                for attempt in range(TASK_RETRY_LIMIT):
-                    try:
-                        task_complete = await run_prompts(
-                            async_task=async_task,
-                            max_concurrent_tasks=max_concurrent_tasks,
-                        )
-                        last_task_error = None
-                        break
-                    except (KeyboardInterrupt, SystemExit):
-                        raise
-                    except (APIConnectionError, APITimeoutError, ConnectionError, TimeoutError) as exc:
-                        last_task_error = exc
-                        remaining = TASK_RETRY_LIMIT - attempt - 1
-                        if remaining > 0:
-                            backoff = TASK_RETRY_BACKOFF * (attempt + 1)
-                            await render_model_output(
-                                f"** 🤖🔄 Task {task_name!r} failed: {exc}\n"
-                                f"** 🤖🔄 Retrying in {backoff}s ({remaining} attempts left)\n"
+                async def before_sleep_log(retry_state) -> None:
+                    exc = retry_state.outcome.exception()
+                    attempt = retry_state.attempt_number
+                    remaining = TASK_RETRY_LIMIT - attempt
+                    backoff = retry_state.next_action.sleep
+                    logging.warning(f"Task {task_name!r} attempt {attempt} failed: {exc}")
+                    await render_model_output(
+                        f"** 🤖🔄 Task {task_name!r} failed: {exc}\n"
+                        f"** 🤖🔄 Retrying in {backoff}s ({remaining} attempts left)\n"
+                    )
+
+                try:
+                    async for attempt in AsyncRetrying(
+                        retry=retry_if_exception_type((APIConnectionError, APITimeoutError, RateLimitError, ConnectionError, TimeoutError)),
+                        stop=stop_after_attempt(TASK_RETRY_LIMIT),
+                        wait=wait_exponential(multiplier=TASK_RETRY_BACKOFF, max=60),
+                        before_sleep=before_sleep_log,
+                        reraise=True
+                    ):
+                        with attempt:
+                            task_complete = await run_prompts(
+                                async_task=async_task,
+                                max_concurrent_tasks=max_concurrent_tasks,
                             )
-                            logging.warning(f"Task {task_name!r} attempt {attempt + 1} failed: {exc}")
-                            await asyncio.sleep(backoff)
-                        else:
-                            logging.error(f"Task {task_name!r} failed after {TASK_RETRY_LIMIT} attempts: {exc}")
-                    except Exception as exc:
-                        last_task_error = exc
-                        logging.error(f"Task {task_name!r} failed (non-retriable): {exc}")
-                        break
+                            last_task_error = None
+                except Exception as exc:
+                    last_task_error = exc
+                    logging.error(f"Task {task_name!r} failed: {exc}")
 
                 # If all retries exhausted with an exception, save and re-raise
                 if last_task_error is not None:
