@@ -123,6 +123,15 @@ dependencies = [
 [project.scripts]
 seclab-taskflow-agent = "seclab_taskflow_agent.cli:app"
 
+[project.optional-dependencies]
+# Pulls in the GitHub Copilot SDK (public preview) so the copilot_sdk
+# backend can be selected. Requires Python >= 3.11. Pinned to the
+# 0.2.x line because the SDK may ship breaking changes between minor
+# versions while still in preview.
+copilot = [
+  "github-copilot-sdk>=0.2.2,<0.3",
+]
+
 [project.urls]
 Source = "https://github.com/GitHubSecurityLab/seclab-taskflow-agent"
 Issues = "https://github.com/GitHubSecurityLab/seclab-taskflow-agent/issues"

@@ -221,6 +221,30 @@ class TestModelConfigDocument:
         with pytest.raises(ValidationError):
             ModelConfigDocument(**data)
 
+    def test_backend_default_none(self):
+        data = {
+            "seclab-taskflow-agent": {"version": "1.0", "filetype": "model_config"},
+            "models": {},
+        }
+        assert ModelConfigDocument(**data).backend is None
+
+    def test_backend_explicit(self):
+        data = {
+            "seclab-taskflow-agent": {"version": "1.0", "filetype": "model_config"},
+            "backend": "copilot_sdk",
+            "models": {},
+        }
+        assert ModelConfigDocument(**data).backend == "copilot_sdk"
+
+    def test_backend_invalid(self):
+        data = {
+            "seclab-taskflow-agent": {"version": "1.0", "filetype": "model_config"},
+            "backend": "not_a_backend",
+            "models": {},
+        }
+        with pytest.raises(ValidationError):
+            ModelConfigDocument(**data)
+
 
 class TestPromptDocument:
     """Test prompt document parsing."""
