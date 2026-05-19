@@ -16,12 +16,12 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ['3.11', '3.13'] # the one we have in the Codespace + the latest supported one by PyO3.
+        python-version: ['3.11', '3.14'] # the one we have in the Codespace + the latest one supported by Python 3.
       fail-fast: false  # Continue testing other version(s) if one fails
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
 
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v6
