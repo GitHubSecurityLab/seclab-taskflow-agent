@@ -24,6 +24,7 @@ from agents.agent import FunctionToolResult, ModelSettings, ToolsToFinalOutputRe
 from agents.run import DEFAULT_MAX_TURNS
 from dotenv import find_dotenv, load_dotenv
 from openai import AsyncOpenAI
+import httpx
 
 from .capi import get_AI_endpoint, get_AI_token, get_provider
 
@@ -178,11 +179,17 @@ class TaskAgent:
 
         # Only send provider-specific headers to matching endpoints
         provider = get_provider(resolved_endpoint)
+        # httpx defaults to no read timeout, which lets a streaming run
+        # block forever on a half-open TCP connection (CLOSE_WAIT). Pin
+        # explicit per-phase timeouts so dead sockets surface as
+        # APITimeoutError and our retry loop can recover.
         client = AsyncOpenAI(
             base_url=resolved_endpoint,
             api_key=resolved_token,
             default_headers=provider.extra_headers or None,
+            timeout=httpx.Timeout(connect=10.0, read=300.0, write=300.0, pool=60.0),
         )
+        self._openai_client = client
         set_tracing_disabled(True)
         self.run_hooks = run_hooks or TaskRunHooks()
 
@@ -208,6 +215,16 @@ class TaskAgent:
             model_settings=model_settings or ModelSettings(),
             hooks=agent_hooks or TaskAgentHooks(),
         )
+
+    async def close(self) -> None:
+        """Release the underlying httpx connection pool.
+
+        Dead CLOSE_WAIT sockets left in the pool can keep kqueue/epoll
+        spinning on the event loop after the agent is otherwise done,
+        so the runner calls this in its ``finally`` to free them.
+        """
+        if self._openai_client is not None:
+            await self._openai_client.close()
 
     async def run(self, prompt: str, max_turns: int = DEFAULT_MAX_TURNS) -> result.RunResult:
         """Run the agent to completion and return the result."""

@@ -80,11 +80,12 @@ class TestResolveModelConfig:
         at.get_model_config.return_value = _make_model_config(
             models={"fast": "gpt-4o-mini", "smart": "gpt-4o"},
         )
-        keys, mdict, params, api_type = _resolve_model_config(at, "ref")
+        keys, mdict, params, api_type, backend = _resolve_model_config(at, "ref")
         assert set(keys) == {"fast", "smart"}
         assert mdict == {"fast": "gpt-4o-mini", "smart": "gpt-4o"}
         assert params == {}
         assert api_type == "chat_completions"
+        assert backend is None
 
     def test_api_type_flows_through(self):
         """api_type from the config document is returned."""
@@ -93,7 +94,7 @@ class TestResolveModelConfig:
             models={"m1": "provider-model"},
             api_type="responses",
         )
-        _, _, _, api_type = _resolve_model_config(at, "ref")
+        _, _, _, api_type, _ = _resolve_model_config(at, "ref")
         assert api_type == "responses"
 
     def test_model_settings_extraction(self):
@@ -103,7 +104,7 @@ class TestResolveModelConfig:
             models={"m1": "provider-m1"},
             model_settings={"m1": {"temperature": 0.5}},
         )
-        _, _, params, _ = _resolve_model_config(at, "ref")
+        _, _, params, _, _ = _resolve_model_config(at, "ref")
         assert params == {"m1": {"temperature": 0.5}}
 
     def test_validation_error_on_non_dict_settings(self):
