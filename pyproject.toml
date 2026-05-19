@@ -115,7 +115,7 @@ dependencies = [
   "types-requests==2.32.4.20250611",
   "typing-inspection==0.4.2",
   "typing_extensions==4.15.0",
-  "ujson==5.12.0",
+  "ujson==5.12.1",
   "urllib3==2.6.3",
   "uvicorn==0.35.0",
   "zipp==3.23.0",
