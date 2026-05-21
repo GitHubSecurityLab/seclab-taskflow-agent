@@ -15,6 +15,7 @@ __all__ = ["app", "main"]
 import asyncio
 import logging
 import os
+import sys
 import traceback
 from typing import Annotated
 
@@ -152,6 +153,7 @@ def main(
     # When resuming, the session carries taskflow_path/globals/prompt
     effective_taskflow = taskflow if not resume else None
 
+    exit_code = 0
     try:
         asyncio.run(
             run_main(
@@ -162,13 +164,23 @@ def main(
         )
     except KeyboardInterrupt:
         typer.echo("\nInterrupted.", err=True)
-        raise typer.Exit(code=130)
+        exit_code = 130
     except Exception as exc:
         if debug:
             traceback.print_exc()
         else:
             _print_concise_error(exc)
-        raise typer.Exit(code=1)
+        exit_code = 1
+
+    # Force-exit at the CLI boundary. Python's shutdown path can spin on
+    # dangling asyncio tasks or half-open sockets (notably through the
+    # Responses API + MCP combination), which blocks the interpreter
+    # from returning even after asyncio.run() completes. Tests that
+    # invoke run_main() directly never hit this path.
+    logging.shutdown()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(exit_code)
 
 
 # ---------------------------------------------------------------------------

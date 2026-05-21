@@ -22,28 +22,33 @@ __all__ = [
 import asyncio
 import json
 import logging
-import os
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jinja2
-from agents import Agent, RunContextWrapper, TContext, Tool
-from agents.agent import ModelSettings
-from agents.exceptions import AgentsException, MaxTurnsExceeded
-from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
-from openai import APIConnectionError, APITimeoutError, BadRequestError, RateLimitError
-from openai.types.responses import ResponseTextDeltaEvent
 
-from .agent import DEFAULT_MODEL, TaskAgent, TaskAgentHooks, TaskRunHooks
+from ._stream import drive_backend_stream
+from ._watchdog import start_watchdog, watchdog_ping
+from .agent import DEFAULT_MODEL, TaskAgentHooks, TaskRunHooks
 from .available_tools import AvailableTools
 from .env_utils import TmpEnv
 from .mcp_lifecycle import MCP_CLEANUP_TIMEOUT, build_mcp_servers, mcp_session_task
-from .models import ModelConfigDocument, PersonalityDocument, TaskDefinition
 from .mcp_prompt import mcp_system_prompt
 from .mcp_utils import compress_name, mcp_client_params
+from .models import ModelConfigDocument, PersonalityDocument, TaskDefinition
 from .render_utils import flush_async_output, render_model_output
+from .sdk import AgentSpec, MCPServerSpec, get_backend, resolve_backend_name
+from .sdk.errors import (
+    BackendBadRequestError,
+    BackendMaxTurnsError,
+    BackendTimeoutError,
+    BackendUnexpectedError,
+)
 from .shell_utils import shell_tool_call
 from .template_utils import render_template
+
+if TYPE_CHECKING:  # Hook callbacks still use openai-agents types; fully decoupling them is a later slice.
+    from agents import Agent, RunContextWrapper, TContext, Tool
 
 DEFAULT_MAX_TURNS = 50  # Maximum agent turns before forced termination
 RATE_LIMIT_BACKOFF = 5  # Initial backoff in seconds after a rate-limit response
@@ -56,7 +61,7 @@ TASK_RETRY_BACKOFF = 10  # Initial backoff in seconds between task retries
 def _resolve_model_config(
     available_tools: AvailableTools,
     model_config_ref: str,
-) -> tuple[list[str], dict[str, str], dict[str, dict[str, Any]], str]:
+) -> tuple[list[str], dict[str, str], dict[str, dict[str, Any]], str, str | None]:
     """Load and validate the model configuration file.
 
     Args:
@@ -64,10 +69,12 @@ def _resolve_model_config(
         model_config_ref: Reference name for the model config document.
 
     Returns:
-        A tuple of (model_keys, model_dict, models_params, api_type) where
-        model_keys is the list of logical model names, model_dict maps them
-        to provider model IDs, models_params holds per-model settings, and
-        api_type is ``"chat_completions"`` or ``"responses"``.
+        A tuple of (model_keys, model_dict, models_params, api_type, backend)
+        where model_keys is the list of logical model names, model_dict maps
+        them to provider model IDs, models_params holds per-model settings,
+        api_type is ``"chat_completions"`` or ``"responses"``, and backend
+        is the optional SDK adapter name from the config (``None`` when
+        unset — the runner then falls back to env/endpoint resolution).
 
     Raises:
         ValueError: If the config file has structural problems.
@@ -81,7 +88,7 @@ def _resolve_model_config(
         raise ValueError(
             f"Settings section of model_config file {model_config_ref} contains models not in the model section: {unknown}"
         )
-    return model_keys, model_dict, models_params, m_config.api_type
+    return model_keys, model_dict, models_params, m_config.api_type, m_config.backend
 
 
 def _merge_reusable_task(
@@ -254,6 +261,7 @@ async def deploy_task_agents(
     api_type: str = "chat_completions",
     endpoint: str | None = None,
     token: str | None = None,
+    backend: str | None = None,
     run_hooks: TaskRunHooks | None = None,
     agent_hooks: TaskAgentHooks | None = None,
 ) -> bool:
@@ -266,6 +274,9 @@ async def deploy_task_agents(
         api_type: OpenAI API type -- ``"chat_completions"`` or ``"responses"``.
         endpoint: Optional per-model API endpoint URL override.
         token: Optional env var name to resolve as the API token.
+        backend: Optional explicit SDK adapter name (``"openai_agents"`` or
+            ``"copilot_sdk"``). Defaults to ``SECLAB_TASKFLOW_BACKEND`` or
+            an endpoint-based auto-default.
 
     Returns:
         True if the task completed successfully.
@@ -291,27 +302,34 @@ async def deploy_task_agents(
                 if tb not in toolboxes:
                     toolboxes.append(tb)
 
-    # Model settings
-    parallel_tool_calls = bool(os.getenv("MODEL_PARALLEL_TOOL_CALLS"))
-    model_params: dict[str, Any] = {
-        "tool_choice": "auto" if toolboxes else None,
-        "parallel_tool_calls": parallel_tool_calls if toolboxes else None,
-    }
-    # Only inject a default temperature for chat_completions; the responses
-    # API rejects unsupported parameters.  MODEL_TEMP env override applies
-    # to both API types.
-    model_temp = os.getenv("MODEL_TEMP")
-    if model_temp is not None:
-        model_params["temperature"] = model_temp
-    elif api_type != "responses":
-        model_params["temperature"] = 0.0
-    model_params.update(model_par)
-    model_settings = ModelSettings(**model_params)
+    # Resolve the SDK adapter; it validates each spec just before build().
+    backend_name = resolve_backend_name(explicit=backend, endpoint=endpoint)
+    backend_impl = get_backend(backend_name)
+
+    # Pass the user-provided model_settings through verbatim. The
+    # openai-agents adapter applies its own tool_choice / temperature /
+    # parallel_tool_calls defaults; the copilot adapter consumes only
+    # ``reasoning_effort``.
+    model_params: dict[str, Any] = dict(model_par)
 
     # Build MCP servers and collect server prompts
     entries = build_mcp_servers(available_tools, toolboxes, blocked_tools, headless)
     mcp_params = mcp_client_params(available_tools, toolboxes)
     server_prompts = [sp for _, (_, _, sp, _) in mcp_params.items()]
+
+    # Wrap each built MCP server in a neutral spec. The openai
+    # adapter unwraps ``params["_native"]``; the Copilot adapter reads
+    # ``kind`` plus the raw transport keys.
+    mcp_specs: list[MCPServerSpec] = []
+    for entry in entries:
+        raw_params, *_ = mcp_params.get(entry.server.name, ({}, [], "", 0.0))
+        mcp_specs.append(
+            MCPServerSpec(
+                name=entry.server.name,
+                kind=raw_params.get("kind", "stdio"),
+                params={**raw_params, "_native": entry.server},
+            )
+        )
 
     # Connect MCP servers
     servers_connected = asyncio.Event()
@@ -321,6 +339,7 @@ async def deploy_task_agents(
     await servers_connected.wait()
     logging.debug("All mcp servers are connected!")
 
+    agent_handle = None
     try:
         important_guidelines = [
             "Do not prompt the user with questions.",
@@ -329,101 +348,95 @@ async def deploy_task_agents(
             "Run tools sequentially, wait until one tool has completed before calling the next.",
         ]
 
-        # Create handoff agents from additional personalities
-        handoffs = []
+        # Build handoff and primary AgentSpecs. The multi-personality case
+        # sets in_handoff_graph=True on every participant so the openai
+        # adapter can apply prompt_with_handoff_instructions equivalently
+        # to the pre-refactor behaviour.
         agent_names = list(agents.keys())
+        has_handoffs = len(agent_names) > 1
+        handoff_specs: list[AgentSpec] = []
         for handoff_name in agent_names[1:]:
             personality = agents[handoff_name]
-            handoffs.append(
-                TaskAgent(
+            handoff_specs.append(
+                AgentSpec(
                     name=compress_name(handoff_name),
-                    instructions=prompt_with_handoff_instructions(
-                        mcp_system_prompt(
-                            personality.personality,
-                            personality.task,
-                            server_prompts=server_prompts,
-                            important_guidelines=important_guidelines,
-                        )
+                    instructions=mcp_system_prompt(
+                        personality.personality,
+                        personality.task,
+                        server_prompts=server_prompts,
+                        important_guidelines=important_guidelines,
                     ),
+                    model=model,
+                    model_settings=model_params,
+                    mcp_servers=mcp_specs,
                     handoffs=[],
                     exclude_from_context=exclude_from_context,
-                    mcp_servers=[e.server for e in entries],
-                    model=model,
-                    model_settings=model_settings,
                     api_type=api_type,
                     endpoint=endpoint,
-                    token=token,
-                    run_hooks=run_hooks,
-                    agent_hooks=agent_hooks,
-                ).agent
+                    token_env=token,
+                    in_handoff_graph=has_handoffs,
+                    blocked_tools=blocked_tools,
+                    headless=headless,
+                )
             )
 
-        # Create primary agent
         primary_name = agent_names[0]
         primary_personality = agents[primary_name]
-        system_prompt = mcp_system_prompt(
-            primary_personality.personality,
-            primary_personality.task,
-            server_prompts=server_prompts,
-            important_guidelines=important_guidelines,
-        )
-        agent0 = TaskAgent(
+        primary_spec = AgentSpec(
             name=primary_name,
-            instructions=prompt_with_handoff_instructions(system_prompt) if handoffs else system_prompt,
-            handoffs=handoffs,
-            exclude_from_context=exclude_from_context,
-            mcp_servers=[e.server for e in entries],
+            instructions=mcp_system_prompt(
+                primary_personality.personality,
+                primary_personality.task,
+                server_prompts=server_prompts,
+                important_guidelines=important_guidelines,
+            ),
             model=model,
-            model_settings=model_settings,
+            model_settings=model_params,
+            mcp_servers=mcp_specs,
+            handoffs=handoff_specs,
+            exclude_from_context=exclude_from_context,
             api_type=api_type,
             endpoint=endpoint,
-            token=token,
-            run_hooks=run_hooks,
-            agent_hooks=agent_hooks,
+            token_env=token,
+            in_handoff_graph=has_handoffs,
+            blocked_tools=blocked_tools,
+            headless=headless,
+        )
+        # Validate every spec (handoffs first, then primary) before
+        # touching the backend so capability errors surface upfront.
+        for spec in (*handoff_specs, primary_spec):
+            backend_impl.validate(spec)
+        agent_handle = await backend_impl.build(
+            primary_spec, run_hooks=run_hooks, agent_hooks=agent_hooks
         )
 
         try:
             complete = False
 
-            async def _run_streamed() -> None:
-                max_retry = MAX_API_RETRY
-                rate_limit_backoff = RATE_LIMIT_BACKOFF
-                while rate_limit_backoff:
-                    try:
-                        result = agent0.run_streamed(prompt, max_turns=max_turns)
-                        async for event in result.stream_events():
-                            if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
-                                await render_model_output(event.data.delta, async_task=async_task, task_id=task_id)
-                        await render_model_output("\n\n", async_task=async_task, task_id=task_id)
-                        return
-                    except APITimeoutError:
-                        if not max_retry:
-                            logging.exception("Max retries for APITimeoutError reached")
-                            raise
-                        max_retry -= 1
-                    except RateLimitError:
-                        if rate_limit_backoff == MAX_RATE_LIMIT_BACKOFF:
-                            raise APITimeoutError("Max rate limit backoff reached")
-                        if rate_limit_backoff > MAX_RATE_LIMIT_BACKOFF:
-                            rate_limit_backoff = MAX_RATE_LIMIT_BACKOFF
-                        else:
-                            rate_limit_backoff += rate_limit_backoff
-                        logging.exception(f"Hit rate limit ... holding for {rate_limit_backoff}")
-                        await asyncio.sleep(rate_limit_backoff)
-
-            await _run_streamed()
+            await drive_backend_stream(
+                backend_impl=backend_impl,
+                agent_handle=agent_handle,
+                prompt=prompt,
+                max_turns=max_turns,
+                run_hooks=run_hooks,
+                async_task=async_task,
+                task_id=task_id,
+                max_api_retry=MAX_API_RETRY,
+                initial_rate_limit_backoff=RATE_LIMIT_BACKOFF,
+                max_rate_limit_backoff=MAX_RATE_LIMIT_BACKOFF,
+            )
             complete = True
 
-        except MaxTurnsExceeded as e:
+        except BackendMaxTurnsError as e:
             await render_model_output(f"** 🤖❗ Max Turns Reached: {e}\n", async_task=async_task, task_id=task_id)
             logging.exception(f"Exceeded max_turns: {max_turns}")
-        except AgentsException as e:
+        except BackendUnexpectedError as e:
             await render_model_output(f"** 🤖❗ Agent Exception: {e}\n", async_task=async_task, task_id=task_id)
             logging.exception("Agent Exception")
-        except BadRequestError as e:
+        except BackendBadRequestError as e:
             await render_model_output(f"** 🤖❗ Request Error: {e}\n", async_task=async_task, task_id=task_id)
             logging.exception("Bad Request")
-        except APITimeoutError as e:
+        except BackendTimeoutError as e:
             await render_model_output(f"** 🤖❗ Timeout Error: {e}\n", async_task=async_task, task_id=task_id)
             logging.exception("API Timeout")
 
@@ -433,6 +446,12 @@ async def deploy_task_agents(
         return complete
 
     finally:
+        watchdog_ping()
+        if agent_handle is not None:
+            try:
+                await backend_impl.aclose(agent_handle)
+            except Exception:  # noqa: BLE001 - best-effort release
+                logging.exception("Backend aclose failed")
         start_cleanup.set()
         cleanup_attempts_left = len(entries)
         while cleanup_attempts_left and entries:
@@ -443,6 +462,26 @@ async def deploy_task_agents(
                 continue
             except Exception:
                 logging.exception("Exception in mcp server cleanup task")
+        # Yield to give mcp_session_task a chance to finish after being
+        # signalled, especially when there are no servers to clean up.
+        await asyncio.sleep(0)
+        # If the MCP session task is still running (e.g. all servers were
+        # already disconnected and the cleanup loop above never entered)
+        # cancel it explicitly so a dangling task can't keep the event
+        # loop alive past run_main.
+        if not mcp_sessions.done():
+            mcp_sessions.cancel()
+            try:
+                await asyncio.wait_for(mcp_sessions, timeout=MCP_CLEANUP_TIMEOUT)
+            except asyncio.TimeoutError:
+                logging.warning(
+                    "Timed out waiting for MCP session task cancellation after %ds",
+                    MCP_CLEANUP_TIMEOUT,
+                )
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logging.exception("Exception while cancelling MCP session task")
 
 
 async def run_main(
@@ -465,12 +504,19 @@ async def run_main(
     """
     from .session import TaskflowSession
 
+    # Daemon thread that force-exits the process if the event loop stops
+    # making progress for any reason the asyncio-layer timeouts didn't
+    # already handle. Idempotent — safe to call on every run_main.
+    start_watchdog()
+
     last_mcp_tool_results: list[str] = []
 
     async def on_tool_end_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool, result: str) -> None:
+        watchdog_ping()
         last_mcp_tool_results.append(result)
 
     async def on_tool_start_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool) -> None:
+        watchdog_ping()
         await render_model_output(f"\n** 🤖🛠️ Tool Call: {tool.name}\n")
 
     async def on_handoff_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], source: Agent[TContext]) -> None:
@@ -515,8 +561,11 @@ async def run_main(
         model_dict: dict[str, str] = {}
         models_params: dict[str, dict[str, Any]] = {}
         api_type: str = "chat_completions"
+        backend: str | None = None
         if model_config_ref:
-            model_keys, model_dict, models_params, api_type = _resolve_model_config(available_tools, model_config_ref)
+            model_keys, model_dict, models_params, api_type, backend = _resolve_model_config(
+                available_tools, model_config_ref
+            )
 
         # Create session if this is a new run (not personality mode)
         if session is None:
@@ -640,6 +689,7 @@ async def run_main(
                                     api_type=task_api_type,
                                     endpoint=task_endpoint,
                                     token=task_token,
+                                    backend=backend,
                                     agent_hooks=TaskAgentHooks(on_handoff=on_handoff_hook),
                                 )
 
@@ -681,7 +731,7 @@ async def run_main(
                         break
                     except (KeyboardInterrupt, SystemExit):
                         raise
-                    except (APIConnectionError, APITimeoutError, ConnectionError, TimeoutError) as exc:
+                    except (BackendTimeoutError, ConnectionError, TimeoutError) as exc:
                         last_task_error = exc
                         remaining = TASK_RETRY_LIMIT - attempt - 1
                         if remaining > 0:
