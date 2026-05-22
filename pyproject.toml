@@ -92,7 +92,7 @@ dependencies = [
   "pydantic_core==2.46.3",
   "Pygments==2.20.0",
   "pyperclip==1.9.0",
-  "python-dotenv==1.1.1",
+  "python-dotenv==1.2.2",
   "python-lsp-jsonrpc==1.1.2",
   "python-lsp-server==1.12.2",
   "python-multipart==0.0.27",
