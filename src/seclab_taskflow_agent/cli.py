@@ -162,7 +162,7 @@ def main(
         asyncio.run(
             run_main(
                 available_tools, personality, effective_taskflow,
-                cli_globals, user_prompt, resume_session_id=resume, cli_model_config=model_config, 
+                cli_globals, user_prompt, resume_session_id=resume, cli_model_config=model_config,
             ),
             debug=debug,
         )
