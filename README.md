@@ -24,23 +24,23 @@ You can find a detailed overview of the taskflow grammar [here](doc/GRAMMAR.md) 
 ```
 ┌─────────────────────────────────────────────────────┐
 │                   CLI (cli.py)                      │
-│  Typer-based entry point: -p, -t, -l, -g, --resume │
+│  Typer-based entry point: -p, -t, -l, -g, --resume  │
 └─────────────────────┬───────────────────────────────┘
                       │
 ┌─────────────────────▼───────────────────────────────┐
-│              Runner (runner.py)                      │
-│  Taskflow execution loop, model resolution,          │
-│  template rendering, session checkpointing           │
+│              Runner (runner.py)                     │
+│  Taskflow execution loop, model resolution,         │
+│  template rendering, session checkpointing          │
 └─────────────────────┬───────────────────────────────┘
                       │
 ┌─────────────────────▼───────────────────────────────┐
-│          MCP Lifecycle (mcp_lifecycle.py)            │
-│  Server connection, cleanup, process management      │
+│          MCP Lifecycle (mcp_lifecycle.py)           │
+│  Server connection, cleanup, process management     │
 └─────────────────────┬───────────────────────────────┘
                       │
 ┌─────────────────────▼───────────────────────────────┐
-│            Agent (agent.py)                          │
-│  TaskAgent wrapper, hooks, OpenAI Agents SDK bridge  │
+│            Agent (agent.py)                         │
+│  TaskAgent wrapper, hooks, OpenAI Agents SDK bridge │
 └─────────────────────────────────────────────────────┘
 
 Supporting modules:
@@ -80,6 +80,41 @@ Per-model `model_settings` can include:
 - **`api_type`** — `"chat_completions"` (default) or `"responses"`
 - **`endpoint`** — API base URL override for this model
 - **`token`** — name of an environment variable containing the API key
+
+### Backends
+
+The runner can drive two SDKs behind a common interface:
+
+- **`openai_agents`** (default) — the OpenAI Agents Python SDK. Supports
+  multi-personality handoffs, both `chat_completions` and `responses`
+  `api_type`, `temperature`, `parallel_tool_calls`,
+  `exclude_from_context`, and MCP over stdio, SSE, and streamable HTTP.
+- **`copilot_sdk`** (optional, `pip install seclab-taskflow-agent[copilot]`)
+  — the GitHub Copilot Python SDK. Supports streaming, `reasoning_effort`,
+  MCP over stdio/SSE/HTTP, and per-tool permission gating. The SDK
+  selects its own wire protocol per model, so the YAML `api_type` field
+  is not honoured; multi-personality handoffs, `temperature`, and
+  `parallel_tool_calls` are likewise not available. Taskflows that use
+  unsupported fields fail at load time with a `BackendCapabilityError`
+  naming the offending field.
+
+Selection precedence:
+
+1. `backend:` field in the model config document.
+2. `SECLAB_TASKFLOW_BACKEND` environment variable.
+3. Endpoint auto-default (`api.githubcopilot.com` prefers `copilot_sdk`
+   when the optional dependency is installed).
+4. `openai_agents`.
+
+```yaml
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: model_config
+backend: copilot_sdk
+models:
+  fast: gpt-5-mini
+  slow: claude-opus-4.6
+```
 
 ### Session Recovery
 

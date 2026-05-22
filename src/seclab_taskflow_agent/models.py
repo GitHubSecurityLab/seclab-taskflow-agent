@@ -12,6 +12,7 @@ from __future__ import annotations
 
 __all__ = [
     "ApiType",
+    "BackendSdk",
     "DOCUMENT_MODELS",
     "ModelConfigDocument",
     "PersonalityDocument",
@@ -31,6 +32,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 # Valid API type values for model configuration.
 ApiType = Literal["chat_completions", "responses"]
+
+# Valid backend names. Must stay in sync with ``sdk._KNOWN``.
+BackendSdk = Literal["openai_agents", "copilot_sdk"]
 
 
 # ---------------------------------------------------------------------------
@@ -196,12 +200,17 @@ class ModelConfigDocument(BaseModel):
 
     The ``api_type`` field controls which OpenAI API is used for all models
     in this config: ``"chat_completions"`` (default) or ``"responses"``.
+
+    The ``backend`` field selects which SDK adapter drives the agent loop.
+    When unset the runner falls back to ``SECLAB_TASKFLOW_BACKEND`` or an
+    endpoint-based auto-default. Unknown values are rejected at parse time.
     """
 
     model_config = ConfigDict(extra="allow")
 
     header: TaskflowHeader = Field(alias="seclab-taskflow-agent")
     api_type: ApiType = "chat_completions"
+    backend: BackendSdk | None = None
     models: dict[str, str] = Field(default_factory=dict)
     model_settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
 

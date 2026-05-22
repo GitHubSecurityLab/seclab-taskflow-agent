@@ -11,6 +11,7 @@ registry entry instead of changes scattered across multiple match/case blocks.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -140,12 +141,35 @@ _PROVIDERS: dict[str, APIProvider] = {
 }
 
 def get_provider(endpoint: str | None = None) -> APIProvider:
-    """Return the ``APIProvider`` for the given (or configured) endpoint URL."""
+    """Return the ``APIProvider`` for the given (or configured) endpoint URL.
+
+    When running inside an AWF (Agentic Workflow Firewall) sandbox, the
+    ``AWF_COPILOT_PROXY`` env var names the upstream provider whose behaviour
+    (headers, model defaults, catalog format) the local proxy mirrors.
+    The proxy URL is used as ``base_url`` while all other provider traits
+    come from the named upstream.
+
+    ``AWF_COPILOT_PROXY`` accepts either a bare hostname
+    (``api.githubcopilot.com``) or a full URL
+    (``https://api.githubcopilot.com``).
+    """
     url = endpoint or get_AI_endpoint()
     netloc = urlparse(url).netloc
     provider = _PROVIDERS.get(netloc)
     if provider is not None:
         return provider
+
+    # AWF proxy support: AWF_COPILOT_PROXY names the upstream provider
+    # (e.g. "api.githubcopilot.com") whose behaviour this proxy mirrors.
+    awf_upstream = os.getenv("AWF_COPILOT_PROXY", "").strip()
+    if awf_upstream:
+        # Normalize: accept both bare hostnames and full URLs.
+        parsed = urlparse(awf_upstream)
+        key = parsed.netloc or parsed.path
+        upstream = _PROVIDERS.get(key)
+        if upstream:
+            return dataclasses.replace(upstream, base_url=url)
+
     # Unknown endpoint — return a generic provider with the given base URL
     return APIProvider(name="custom", base_url=url, default_model="please-set-default-model-via-env")
 
