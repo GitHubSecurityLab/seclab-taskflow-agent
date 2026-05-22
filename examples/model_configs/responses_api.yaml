@@ -9,7 +9,7 @@ seclab-taskflow-agent:
   version: "1.0"
   filetype: model_config
 models:
-  gpt_responses: gpt-5-mini
+  gpt_responses: gpt-5.4
 model_settings:
   gpt_responses:
     api_type: responses
