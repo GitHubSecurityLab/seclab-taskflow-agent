@@ -60,7 +60,7 @@ dependencies = [
   "httpcore==1.0.9",
   "httpx==0.28.1",
   "httpx-sse==0.4.1",
-  "idna==3.10",
+  "idna==3.15",
   "importlib_metadata==8.7.0",
   "isodate==0.7.2",
   "jedi==0.19.2",
