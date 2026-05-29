@@ -140,6 +140,8 @@ _PROVIDERS: dict[str, APIProvider] = {
     ),
 }
 
+_DEFAULT_PROVIDER = "api.githubcopilot.com"
+
 def get_provider(endpoint: str | None = None) -> APIProvider:
     """Return the ``APIProvider`` for the given (or configured) endpoint URL.
 
@@ -180,7 +182,7 @@ def get_provider(endpoint: str | None = None) -> APIProvider:
 
 def get_AI_endpoint() -> str:
     """Return the configured AI API endpoint URL."""
-    return os.getenv("AI_API_ENDPOINT", default="https://models.github.ai/inference")
+    return os.getenv("AI_API_ENDPOINT", default=_PROVIDERS[_DEFAULT_PROVIDER].base_url)
 
 
 def get_AI_token() -> str:
