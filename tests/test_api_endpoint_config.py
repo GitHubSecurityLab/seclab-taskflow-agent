@@ -23,7 +23,7 @@ class TestAPIEndpoint:
             endpoint = get_AI_endpoint()
             assert endpoint is not None
             assert isinstance(endpoint, str)
-            assert urlparse(endpoint).netloc == "models.github.ai"
+            assert urlparse(endpoint).netloc == "api.githubcopilot.com"
         finally:
             if original_env:
                 os.environ["AI_API_ENDPOINT"] = original_env
