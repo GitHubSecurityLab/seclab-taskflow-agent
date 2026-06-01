@@ -80,7 +80,7 @@ class TaskflowSession(BaseModel):
         self.updated_at = datetime.now(timezone.utc).isoformat()
         path = self.file_path
         path.write_text(self.model_dump_json(indent=2))
-        logging.debug(f"Session checkpoint saved: {path}")
+        logging.debug("Session checkpoint saved: %s", path)
         return path
 
     def record_task(
@@ -132,5 +132,5 @@ class TaskflowSession(BaseModel):
             try:
                 sessions.append(cls.model_validate_json(f.read_text()))
             except Exception:
-                logging.warning(f"Skipping corrupt session file: {f}")
+                logging.warning("Skipping corrupt session file: %s", f)
         return sessions

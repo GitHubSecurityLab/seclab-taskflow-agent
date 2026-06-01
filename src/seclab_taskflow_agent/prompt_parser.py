@@ -52,10 +52,10 @@ def parse_prompt_args(
         args = parser.parse_known_args(user_prompt.split(" ") if user_prompt else None)
     except SystemExit as e:
         if e.code == 2:
-            logging.exception(f"User provided incomplete prompt: {user_prompt}")
+            logging.exception("User provided incomplete prompt: %s", user_prompt)
         return None, None, None, None, "", help_msg
     except Exception:
-        logging.exception(f"Failed to parse prompt: {user_prompt}")
+        logging.exception("Failed to parse prompt: %s", user_prompt)
         return None, None, None, None, "", help_msg
     p = args[0].p.strip() if args[0].p else None
     t = args[0].t.strip() if args[0].t else None
@@ -65,7 +65,7 @@ def parse_prompt_args(
     if args[0].globals:
         for g in args[0].globals:
             if "=" not in g:
-                logging.error(f"Invalid global variable format: {g}. Expected KEY=VALUE")
+                logging.error("Invalid global variable format: %s. Expected KEY=VALUE", g)
                 return None, None, None, None, "", help_msg
             key, value = g.split("=", 1)
             cli_globals[key.strip()] = value.strip()
