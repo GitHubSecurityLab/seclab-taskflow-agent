@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+import sys
 
 from .path_utils import log_file_name
 
@@ -44,4 +45,5 @@ async def render_model_output(data: str, log: bool = True, async_task: bool = Fa
     if data:
         if log:
             render_logger.info(data)
-        print(data, end="", flush=True)
+        sys.stdout.write(data)
+        sys.stdout.flush()
