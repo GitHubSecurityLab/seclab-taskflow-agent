@@ -501,8 +501,8 @@ async def run_main(
         taskflow_path: Taskflow module path, or None.
         cli_globals: Global variables from CLI.
         prompt: User prompt text.
-        cli_model_config: Model configuration module path, or None.
         resume_session_id: Session ID to resume from a checkpoint.
+        cli_model_config: Model configuration module path, or None.
     """
     from .session import TaskflowSession
 
@@ -545,6 +545,9 @@ async def run_main(
             cli_globals = session.cli_globals
             prompt = session.prompt
             last_mcp_tool_results = list(session.last_tool_results)
+            # Restore persisted model config unless explicitly overridden
+            if not cli_model_config and session.cli_model_config:
+                cli_model_config = session.cli_model_config
             await render_model_output(
                 f"** 🤖🔄 Resuming session {resume_session_id} from task {session.next_task_index}\n"
             )
@@ -578,6 +581,7 @@ async def run_main(
                 cli_globals=cli_globals,
                 prompt=prompt or "",
                 total_tasks=len(taskflow_doc.taskflow),
+                cli_model_config=cli_model_config or "",
             )
             session.save()
             await render_model_output(f"** 🤖📋 Session: {session.session_id}\n")
