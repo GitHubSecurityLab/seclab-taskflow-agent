@@ -56,7 +56,7 @@ class PromptLoader(jinja2.BaseLoader):
             raise jinja2.TemplateNotFound(template)
 
 
-def env_function(var_name: str, default: Optional[str] = None, required: bool = True) -> str:
+def env_function(var_name: str, default: Optional[str] = None, required: bool | None = None) -> str:
     """Jinja2 function to access environment variables.
 
     Args:
@@ -76,7 +76,8 @@ def env_function(var_name: str, default: Optional[str] = None, required: bool = 
         {{ env('OPTIONAL_VAR', required=False) }}
     """
     value = os.getenv(var_name, default)
-    if value is None and required:
+    required_value = True if required is None else required
+    if value is None and required_value:
         raise LookupError(f"Required environment variable {var_name} not found!")
     return value or ""
 

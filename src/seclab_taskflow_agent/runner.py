@@ -634,7 +634,8 @@ async def run_main(
                     available_tools, global_variables, inputs,
                 )
 
-                async def run_prompts(async_task: bool = False, max_concurrent_tasks: int = 5) -> bool:
+                async def run_prompts(async_task: bool | None = None, max_concurrent_tasks: int = 5) -> bool:
+                    async_mode = False if async_task is None else async_task
                     if run:
                         await render_model_output("** 🤖🐚 Executing Shell Task\n")
                         try:
@@ -675,7 +676,7 @@ async def run_main(
                                     available_tools,
                                     ra,
                                     pp,
-                                    async_task=async_task,
+                                    async_task=async_mode,
                                     toolboxes_override=toolboxes_override,
                                     blocked_tools=blocked_tools,
                                     headless=headless,
@@ -695,13 +696,13 @@ async def run_main(
 
                         task_coroutine = _deploy(resolved_agents, p_prompt)
 
-                        if not async_task:
+                        if not async_mode:
                             result = await task_coroutine
                             task_results.append(result)
                         else:
                             tasks.append(task_coroutine)
 
-                    if async_task:
+                    if async_mode:
                         task_results = await asyncio.gather(*tasks, return_exceptions=True)
 
                     complete = True

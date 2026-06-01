@@ -31,10 +31,17 @@ async def flush_async_output(task_id: str) -> None:
     await render_model_output(data)
 
 
-async def render_model_output(data: str, log: bool = True, async_task: bool = False, task_id: str | None = None) -> None:
+async def render_model_output(
+    data: str,
+    log: bool | None = None,
+    async_task: bool | None = None,
+    task_id: str | None = None,
+) -> None:
     """Print model output to the console, optionally buffering for async tasks."""
+    log_enabled = True if log is None else log
+    async_mode = False if async_task is None else async_task
     async with async_output_lock:
-        if async_task and task_id:
+        if async_mode and task_id:
             if task_id in async_output:
                 async_output[task_id] += data
                 data = ""
@@ -42,6 +49,6 @@ async def render_model_output(data: str, log: bool = True, async_task: bool = Fa
                 async_output[task_id] = data
                 data = "** 🤖✏️ Gathering output from async task ... please hold\n"
     if data:
-        if log:
+        if log_enabled:
             render_logger.info(data)
         print(data, end="", flush=True)

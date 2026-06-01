@@ -91,7 +91,7 @@ def main(
     list_models: Annotated[
         bool,
         typer.Option("-l", "--list-models", help="List available tool-call models and exit."),
-    ] = False,
+    ] = None,
     globals_: Annotated[
         list[str] | None,
         typer.Option("-g", "--global", help="Global variable as KEY=VALUE. Repeatable."),
@@ -99,7 +99,7 @@ def main(
     debug: Annotated[
         bool,
         typer.Option("-d", "--debug", help="Show full tracebacks on errors."),
-    ] = False,
+    ] = None,
     resume: Annotated[
         str | None,
         typer.Option("--resume", help="Resume a previous session by its ID."),
@@ -111,14 +111,19 @@ def main(
 ) -> None:
     """Run a taskflow or personality-based agent session."""
     # Debug mode from flag or env var
-    debug = debug or os.getenv("TASK_AGENT_DEBUG", "").strip().lower() in ("1", "true", "yes")
+    debug_enabled = (False if debug is None else debug) or os.getenv("TASK_AGENT_DEBUG", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    list_models_enabled = False if list_models is None else list_models
 
     # Validate mutual exclusivity (resume is standalone)
-    if resume and (personality or taskflow or list_models):
+    if resume and (personality or taskflow or list_models_enabled):
         typer.echo("Error: --resume cannot be combined with -p, -t, or -l.", err=True)
         raise typer.Exit(code=1)
 
-    specified = sum(bool(x) for x in [personality, taskflow, list_models])
+    specified = sum(bool(x) for x in [personality, taskflow, list_models_enabled])
     if specified > 1:
         typer.echo("Error: -p, -t, and -l are mutually exclusive.", err=True)
         raise typer.Exit(code=1)
@@ -128,7 +133,7 @@ def main(
     available_tools = AvailableTools()
 
     # List models mode
-    if list_models:
+    if list_models_enabled:
         tool_models = list_tool_call_models(get_AI_token())
         for model in tool_models:
             typer.echo(model)
@@ -160,13 +165,13 @@ def main(
                 available_tools, personality, effective_taskflow,
                 cli_globals, user_prompt, resume_session_id=resume,
             ),
-            debug=debug,
+            debug=debug_enabled,
         )
     except KeyboardInterrupt:
         typer.echo("\nInterrupted.", err=True)
         exit_code = 130
     except Exception as exc:
-        if debug:
+        if debug_enabled:
             traceback.print_exc()
         else:
             _print_concise_error(exc)

@@ -151,7 +151,7 @@ class TaskAgent:
         name: str = "TaskAgent",
         instructions: str = "",
         handoffs: list[Any] | None = None,
-        exclude_from_context: bool = False,
+        exclude_from_context: bool | None = None,
         mcp_servers: list[Any] | None = None,
         model: str = DEFAULT_MODEL,
         model_settings: ModelSettings | None = None,
@@ -205,10 +205,12 @@ class TaskAgent:
         else:
             model_impl = OpenAIChatCompletionsModel(model=model, openai_client=client)
 
+        exclude_tool_results = False if exclude_from_context is None else exclude_from_context
+
         self.agent = Agent(
             name=name,
             instructions=instructions,
-            tool_use_behavior=_ToolsToFinalOutputFunction if exclude_from_context else "run_llm_again",
+            tool_use_behavior=_ToolsToFinalOutputFunction if exclude_tool_results else "run_llm_again",
             model=model_impl,
             handoffs=handoffs or [],
             mcp_servers=mcp_servers or [],

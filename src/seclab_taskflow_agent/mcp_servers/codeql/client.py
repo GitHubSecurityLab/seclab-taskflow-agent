@@ -44,10 +44,11 @@ class CodeQL:
         self,
         codeql_cli=os.getenv("CODEQL_CLI", default="codeql"),
         server_options=["--threads=0", "--quiet"],
-        log_stderr=False,
+        log_stderr=None,
     ):
+        log_stderr_enabled = False if log_stderr is None else log_stderr
         self.server_options = server_options.copy()
-        if log_stderr:
+        if log_stderr_enabled:
             self.stderr_log = log_file_name("codeql_stderr_log.log")
             self.server_options.append("--log-to-stderr")
         else:
@@ -406,10 +407,11 @@ class CodeQL:
 
 
 class QueryServer(CodeQL):
-    def __init__(self, database: Path, keep_alive=False, log_stderr=False):
+    def __init__(self, database: Path, keep_alive=None, log_stderr=None):
+        keep_alive_mode = False if keep_alive is None else keep_alive
         super().__init__(log_stderr=log_stderr)
         self.database = database
-        self.keep_alive = keep_alive
+        self.keep_alive = keep_alive_mode
 
     def __enter__(self):
         global _ACTIVE_CODEQL_SERVERS
@@ -476,14 +478,15 @@ def _file_uri_to_path(uri):
     return path, region
 
 
-def _get_source_prefix(database_path: Path, strip_leading_slash=True) -> str:
+def _get_source_prefix(database_path: Path, strip_leading_slash=None) -> str:
     # grab the source prefix from codeql-database.yml
     db_yml_path = Path(database_path) / Path("codeql-database.yml")
     with open(db_yml_path) as stream:
         try:
             # normalize
             source_prefix = "/" + yaml.safe_load(stream)["sourceLocationPrefix"].strip().strip("/") + "/"
-            if strip_leading_slash:
+            strip_leading = True if strip_leading_slash is None else strip_leading_slash
+            if strip_leading:
                 source_prefix = source_prefix.lstrip("/")
             return source_prefix
         except (yaml.YAMLError, FileNotFoundError, KeyError) as e:
@@ -491,19 +494,23 @@ def _get_source_prefix(database_path: Path, strip_leading_slash=True) -> str:
             raise
 
 
-def list_src_files(database_path: str | Path, as_uri=False, strip_prefix=True):
+def list_src_files(database_path: str | Path, as_uri=None, strip_prefix=None):
+    as_uri_mode = False if as_uri is None else as_uri
+    strip_prefix_mode = True if strip_prefix is None else strip_prefix
     src_path = Path(database_path) / Path("src.zip")
     files = shell_command_to_string(["zipinfo", "-1", src_path]).split("\n")
     source_prefix = _get_source_prefix(Path(database_path))
     # file:// uri are formatted absolute paths even if they're relative
     files = [
-        f"{'file:///' if as_uri else ''}{path.strip().removeprefix(source_prefix if strip_prefix else '')}"
+        f"{'file:///' if as_uri_mode else ''}{path.strip().removeprefix(source_prefix if strip_prefix_mode else '')}"
         for path in files
     ]
     return files
 
 
-def search_in_src_archive(database_path: str, search_term: str, as_uri=False, strip_prefix=True):
+def search_in_src_archive(database_path: str, search_term: str, as_uri=None, strip_prefix=None):
+    as_uri_mode = False if as_uri is None else as_uri
+    strip_prefix_mode = True if strip_prefix is None else strip_prefix
     database_path = Path(database_path)
     src_path = database_path / Path("src.zip")
     results = {}
@@ -515,8 +522,8 @@ def search_in_src_archive(database_path: str, search_term: str, as_uri=False, st
             with z.open(entry, "r") as f:
                 for i, line in enumerate(f):
                     if search_term in str(line):
-                        path = entry.filename.strip().removeprefix(source_prefix if strip_prefix else "")
-                        path = f"{'file:///' if as_uri else ''}{path}"
+                        path = entry.filename.strip().removeprefix(source_prefix if strip_prefix_mode else "")
+                        path = f"{'file:///' if as_uri_mode else ''}{path}"
                         if path not in results:
                             results[path] = [i + 1]
                         else:
@@ -596,10 +603,12 @@ def run_query(
     progress_callback=None,
     template_values=None,
     # keep the query server alive if desired
-    keep_alive=True,
-    log_stderr=False,
+    keep_alive=None,
+    log_stderr=None,
 ):
     result = ""
+    keep_alive_mode = True if keep_alive is None else keep_alive
+    log_stderr_mode = False if log_stderr is None else log_stderr
     query_path = Path(query_path)
     target_pos = None
     if target:
@@ -608,7 +617,7 @@ def run_query(
             raise ValueError(f"Could not resolve quick eval target for {target}")
     try:
         with (
-            QueryServer(database, keep_alive=keep_alive, log_stderr=log_stderr) as server,
+            QueryServer(database, keep_alive=keep_alive_mode, log_stderr=log_stderr_mode) as server,
             tempfile.TemporaryDirectory() as base_path,
         ):
             if callable(progress_callback):

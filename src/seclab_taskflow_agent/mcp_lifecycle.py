@@ -45,7 +45,7 @@ def build_mcp_servers(
     available_tools: AvailableTools,
     toolboxes: list[str],
     blocked_tools: list[str] | None = None,
-    headless: bool = False,
+    headless: bool | None = None,
 ) -> list[MCPServerEntry]:
     """Build MCP server instances for the given toolboxes.
 
@@ -58,12 +58,13 @@ def build_mcp_servers(
     Returns:
         List of MCPServerEntry instances ready for connection.
     """
+    headless_mode = False if headless is None else headless
     tool_filter = create_static_tool_filter(blocked_tool_names=blocked_tools) if blocked_tools else None
     mcp_params = mcp_client_params(available_tools, toolboxes)
     entries: list[MCPServerEntry] = []
 
     for tb, (params, confirms, server_prompt, client_session_timeout) in mcp_params.items():
-        if headless:
+        if headless_mode:
             confirms = []
         client_session_timeout = client_session_timeout or DEFAULT_MCP_CLIENT_SESSION_TIMEOUT
         server_proc = None

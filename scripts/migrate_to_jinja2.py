@@ -21,8 +21,8 @@ from typing import List, Tuple
 class TemplateMigrator:
     """Migrates custom template syntax to Jinja2."""
 
-    def __init__(self, dry_run: bool = False):
-        self.dry_run = dry_run
+    def __init__(self, dry_run: bool | None = None):
+        self.dry_run = False if dry_run is None else dry_run
         self.transformations: List[Tuple[str, str]] = []
 
     def migrate_content(self, content: str) -> str:
@@ -133,13 +133,14 @@ class TemplateMigrator:
                 print(f"  - {orig}")
                 print(f"  + {mig}")
 
-    def migrate_directory(self, directory: Path, recursive: bool = True) -> int:
+    def migrate_directory(self, directory: Path, recursive: bool | None = None) -> int:
         """Migrate all YAML files in directory.
 
         Returns:
             Number of files modified
         """
-        pattern = '**/*.yaml' if recursive else '*.yaml'
+        recursive_mode = True if recursive is None else recursive
+        pattern = '**/*.yaml' if recursive_mode else '*.yaml'
         yaml_files = list(directory.glob(pattern))
 
         if not yaml_files:
