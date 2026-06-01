@@ -28,6 +28,7 @@ from ..base import AgentSpec, StreamEvent, TextDelta, ToolEnd
 from ..errors import BackendBadRequestError, BackendCapabilityError, BackendUnexpectedError
 from .mcp import build_mcp_config
 from .permissions import build_permission_handler
+from seclab_taskflow_agent.error_utils import error_with_message
 
 _VALID_REASONING = ("low", "medium", "high", "xhigh")
 
@@ -66,9 +67,7 @@ def _normalize_model(model: str) -> str:
             about the model under test.
     """
     if not model:
-        raise BackendBadRequestError(
-            "copilot_sdk: model is required (the SDK would otherwise pick a default)"
-        )
+        raise error_with_message(BackendBadRequestError, "copilot_sdk: model is required (the SDK would otherwise pick a default)")
     return model.split("/", 1)[1] if "/" in model else model
 
 
@@ -96,10 +95,8 @@ def _reasoning_effort(model_settings: dict[str, Any]) -> str | None:
     if raw is None:
         return None
     if raw not in _VALID_REASONING:
-        raise BackendBadRequestError(
-            f"copilot_sdk: invalid reasoning_effort {raw!r} "
-            f"(expected one of {_VALID_REASONING})"
-        )
+        raise error_with_message(BackendBadRequestError, f"copilot_sdk: invalid reasoning_effort {raw!r} "
+            f"(expected one of {_VALID_REASONING})")
     return raw
 
 
@@ -132,14 +129,10 @@ class CopilotSDKBackend:
         wire protocol per model.
         """
         if spec.handoffs or spec.in_handoff_graph:
-            raise BackendCapabilityError(
-                "copilot_sdk: agent handoffs are not supported"
-            )
+            raise error_with_message(BackendCapabilityError, "copilot_sdk: agent handoffs are not supported")
         for unsupported in ("temperature", "parallel_tool_calls"):
             if unsupported in spec.model_settings:
-                raise BackendCapabilityError(
-                    f"copilot_sdk: model_settings.{unsupported} is not supported"
-                )
+                raise error_with_message(BackendCapabilityError, f"copilot_sdk: model_settings.{unsupported} is not supported")
 
     async def build(
         self,

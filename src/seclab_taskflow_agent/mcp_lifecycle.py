@@ -23,6 +23,7 @@ from .mcp_utils import (
     MCPNamespaceWrap,
     mcp_client_params,
 )
+from seclab_taskflow_agent.error_utils import error_with_message
 
 if TYPE_CHECKING:
     from .available_tools import AvailableTools
@@ -116,7 +117,7 @@ def build_mcp_servers(
                     client_session_timeout_seconds=client_session_timeout,
                 )
             case _:
-                raise ValueError(f"Unsupported MCP transport: {params['kind']}")
+                raise error_with_message(ValueError, f"Unsupported MCP transport: {params['kind']}")
 
         entries.append(MCPServerEntry(MCPNamespaceWrap(confirms, mcp_server), server_proc, name=tb))
 

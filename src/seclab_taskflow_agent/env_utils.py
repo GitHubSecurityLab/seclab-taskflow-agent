@@ -7,6 +7,7 @@ import os
 from typing import Any
 
 import jinja2
+from seclab_taskflow_agent.error_utils import error_with_message
 
 __all__ = ["TmpEnv", "swap_env"]
 
@@ -49,7 +50,7 @@ def swap_env(s: str, context: dict[str, Any] | None = None) -> str:
     except jinja2.UndefinedError as e:
         raise LookupError(str(e))
     except jinja2.TemplateError as e:
-        raise LookupError(f"Template rendering failed for: {s!r}: {e}")
+        raise error_with_message(LookupError, f"Template rendering failed for: {s!r}: {e}")
 
 
 class TmpEnv:

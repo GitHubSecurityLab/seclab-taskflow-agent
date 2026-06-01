@@ -20,6 +20,7 @@ import traceback
 from typing import Annotated
 
 import typer
+from seclab_taskflow_agent.error_utils import error_with_message
 
 from .available_tools import AvailableTools
 from .banner import get_banner
@@ -37,7 +38,7 @@ app = typer.Typer(
 def _parse_global(value: str) -> tuple[str, str]:
     """Parse a ``KEY=VALUE`` string into a (key, value) pair."""
     if "=" not in value:
-        raise typer.BadParameter(f"Invalid global variable format: {value!r}. Expected KEY=VALUE.")
+        raise error_with_message(typer.BadParameter, f"Invalid global variable format: {value!r}. Expected KEY=VALUE.")
     key, _, val = value.partition("=")
     return key.strip(), val.strip()
 

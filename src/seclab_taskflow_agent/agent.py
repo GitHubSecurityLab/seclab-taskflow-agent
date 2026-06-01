@@ -27,6 +27,7 @@ from openai import AsyncOpenAI
 import httpx
 
 from .capi import get_AI_endpoint, get_AI_token, get_provider
+from seclab_taskflow_agent.error_utils import error_with_message
 
 __all__ = [
     "DEFAULT_MODEL",
@@ -173,7 +174,7 @@ class TaskAgent:
         if token:
             resolved_token = os.getenv(token, "")
             if not resolved_token:
-                raise RuntimeError(f"Token env var {token!r} is not set")
+                raise error_with_message(RuntimeError, f"Token env var {token!r} is not set")
         else:
             resolved_token = get_AI_token()
 

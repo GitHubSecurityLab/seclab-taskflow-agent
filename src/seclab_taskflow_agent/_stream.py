@@ -27,6 +27,7 @@ from ._watchdog import watchdog_ping
 from .render_utils import render_model_output
 from .sdk import TextDelta, ToolEnd
 from .sdk.errors import BackendRateLimitError, BackendTimeoutError
+from seclab_taskflow_agent.error_utils import error_with_message
 
 # Application-level backstop: if the backend's event stream goes silent
 # for this long, surface a BackendTimeoutError so the retry loop can
@@ -100,9 +101,7 @@ async def drive_backend_stream(
                     except StopAsyncIteration:
                         break
                     except asyncio.TimeoutError as exc:
-                        raise BackendTimeoutError(
-                            f"Backend stream idle for {STREAM_IDLE_TIMEOUT}s"
-                        ) from exc
+                        raise error_with_message(BackendTimeoutError, f"Backend stream idle for {STREAM_IDLE_TIMEOUT}s") from exc
                     watchdog_ping()
                     if isinstance(event, TextDelta):
                         await render_model_output(
@@ -130,7 +129,7 @@ async def drive_backend_stream(
         except BackendRateLimitError as exc:
             last_rate_limit_exc = exc
             if rate_limit_backoff == max_rate_limit_backoff:
-                raise BackendTimeoutError("Max rate limit backoff reached") from exc
+                raise error_with_message(BackendTimeoutError, "Max rate limit backoff reached") from exc
             if rate_limit_backoff > max_rate_limit_backoff:
                 rate_limit_backoff = max_rate_limit_backoff
             else:
@@ -139,4 +138,4 @@ async def drive_backend_stream(
             await asyncio.sleep(rate_limit_backoff)
 
     if last_rate_limit_exc is not None:  # pragma: no cover - loop always returns/raises above
-        raise BackendTimeoutError("Rate limit backoff exhausted") from last_rate_limit_exc
+        raise error_with_message(BackendTimeoutError, "Rate limit backoff exhausted") from last_rate_limit_exc

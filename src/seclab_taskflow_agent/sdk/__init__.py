@@ -31,6 +31,7 @@ from .base import (
     TextDelta,
     ToolEnd,
 )
+from seclab_taskflow_agent.error_utils import error_with_message
 
 _ENV_VAR = "SECLAB_TASKFLOW_BACKEND"
 _KNOWN = ("openai_agents", "copilot_sdk")
@@ -40,7 +41,7 @@ _BACKENDS: dict[str, AgentBackend] = {}
 def get_backend(name: str) -> AgentBackend:
     """Return the backend adapter instance for *name*, importing it lazily."""
     if name not in _KNOWN:
-        raise ValueError(f"Unknown backend {name!r}. Known: {_KNOWN}")
+        raise error_with_message(ValueError, f"Unknown backend {name!r}. Known: {_KNOWN}")
     if name not in _BACKENDS:
         if name == "openai_agents":
             from .openai_agents.backend import OpenAIAgentsBackend
@@ -73,5 +74,5 @@ def resolve_backend_name(
     del endpoint  # reserved for forward compat; not used for selection
     name = explicit or os.getenv(_ENV_VAR) or "openai_agents"
     if name not in _KNOWN:
-        raise ValueError(f"Unknown backend {name!r}. Known: {_KNOWN}")
+        raise error_with_message(ValueError, f"Unknown backend {name!r}. Known: {_KNOWN}")
     return name

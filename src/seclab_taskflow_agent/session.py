@@ -24,6 +24,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .path_utils import _data_dir
+from seclab_taskflow_agent.error_utils import error_with_message
 
 
 def session_dir() -> Path:
@@ -121,7 +122,7 @@ class TaskflowSession(BaseModel):
         """
         path = session_dir() / f"{session_id}.json"
         if not path.exists():
-            raise FileNotFoundError(f"No session checkpoint found: {session_id}")
+            raise error_with_message(FileNotFoundError, f"No session checkpoint found: {session_id}")
         return cls.model_validate_json(path.read_text())
 
     @classmethod

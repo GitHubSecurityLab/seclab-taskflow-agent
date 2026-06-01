@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .available_tools import AvailableTools
 
 from .available_tools import BadToolNameError
+from seclab_taskflow_agent.error_utils import error_with_message
 
 
 class PromptLoader(jinja2.BaseLoader):
@@ -77,7 +78,7 @@ def env_function(var_name: str, default: Optional[str] = None, required: bool = 
     """
     value = os.getenv(var_name, default)
     if value is None and required:
-        raise LookupError(f"Required environment variable {var_name} not found!")
+        raise error_with_message(LookupError, f"Required environment variable {var_name} not found!")
     return value or ""
 
 

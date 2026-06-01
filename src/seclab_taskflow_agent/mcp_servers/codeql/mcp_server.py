@@ -12,6 +12,7 @@ from fastmcp import FastMCP  # use FastMCP 2.0
 from pydantic import Field
 
 from seclab_taskflow_agent.path_utils import log_file_name, mcp_data_dir
+from seclab_taskflow_agent.error_utils import error_with_message
 
 from .client import _debug_log, file_from_uri, list_src_files, run_query, search_in_src_archive
 
@@ -53,10 +54,10 @@ TEMPLATED_QUERY_PATHS = {
 def _resolve_query_path(language: str, query: str) -> Path:
     global TEMPLATED_QUERY_PATHS
     if language not in TEMPLATED_QUERY_PATHS:
-        raise RuntimeError(f"Error: Language `{language}` not supported!")
+        raise error_with_message(RuntimeError, f"Error: Language `{language}` not supported!")
     query_path = TEMPLATED_QUERY_PATHS[language].get(query)
     if not query_path:
-        raise RuntimeError(f"Error: query `{query}` not supported for `{language}`!")
+        raise error_with_message(RuntimeError, f"Error: query `{query}` not supported for `{language}`!")
     return Path(query_path)
 
 
@@ -69,7 +70,7 @@ def _resolve_db_path(relative_db_path: str | Path):
     absolute_path = CODEQL_DBS_BASE_PATH / relative_db_path
     if not absolute_path.is_dir():
         _debug_log(f"Database path not found: {absolute_path}")
-        raise RuntimeError(f"Error: Database not found at {absolute_path}!")
+        raise error_with_message(RuntimeError, f"Error: Database not found at {absolute_path}!")
     return absolute_path
 
 
