@@ -24,7 +24,7 @@ You can find a detailed overview of the taskflow grammar [here](doc/GRAMMAR.md) 
 ```
 ┌─────────────────────────────────────────────────────┐
 │                   CLI (cli.py)                      │
-│  Typer-based entry point: -p, -t, -l, -g, --resume  │
+│  Typer-based entry point: -p, -t, -l, -g, -m, --resume│
 └─────────────────────┬───────────────────────────────┘
                       │
 ┌─────────────────────▼───────────────────────────────┐
@@ -130,6 +130,14 @@ Resume from the last successful checkpoint:
 
 ```bash
 python -m seclab_taskflow_agent --resume abc123def456
+```
+
+The session checkpoint persists the CLI-provided `--model-config` value (if
+any), so resumes use the same model configuration by default. To override the
+model config on resume, pass `--model-config` / `-m` explicitly:
+
+```bash
+python -m seclab_taskflow_agent --resume abc123def456 -m examples.model_configs.responses_api
 ```
 
 Failed tasks are automatically retried up to 3 times with increasing backoff
@@ -610,6 +618,19 @@ taskflow:
 ```
 
 The model version can then be updated by changing `gpt_latest` in the `model_config` file and applied across all taskflows that use the config.
+
+#### CLI override
+
+The `model_config` can also be specified (or overridden) from the command line
+with `--model-config` / `-m`. This takes precedence over any `model_config`
+value defined in the taskflow YAML:
+
+```bash
+python -m seclab_taskflow_agent -t examples.taskflows.echo -m examples.model_configs.responses_api
+```
+
+The CLI-provided model config is persisted in the session checkpoint, so
+resumed runs automatically use the same configuration.
 
 In addition, model specific parameters can be provided via `model_config`. To do so, define a `model_settings` section in the `model_config` file. This section has to be a dictionary with the model names as keys:
 

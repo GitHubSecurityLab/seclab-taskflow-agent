@@ -286,26 +286,24 @@ class TestCliModelConfigOverride:
 
     def test_cli_overrides_taskflow_model_config(self):
         """cli_model_config takes precedence over taskflow_doc.model_config_ref."""
-        taskflow_ref = "taskflow.models.default"
-        cli_ref = "cli.models.override"
-
-        # Simulate the override logic from run_main
-        model_config_ref = taskflow_ref
-        if cli_ref:
-            model_config_ref = cli_ref
-
-        assert model_config_ref == cli_ref
+        model_config_ref = self._resolve("taskflow.models.default", "cli.models.override")
+        assert model_config_ref == "cli.models.override"
 
     def test_taskflow_model_config_used_when_cli_absent(self):
         """Taskflow model_config_ref is used when cli_model_config is None."""
         taskflow_ref = "taskflow.models.default"
         cli_ref = None
 
+        model_config_ref = self._resolve(taskflow_ref, cli_ref)
+        assert model_config_ref == taskflow_ref
+
+    @staticmethod
+    def _resolve(taskflow_ref: str, cli_ref: str | None) -> str:
+        """Reproduce the override logic from run_main."""
         model_config_ref = taskflow_ref
         if cli_ref:
             model_config_ref = cli_ref
-
-        assert model_config_ref == taskflow_ref
+        return model_config_ref
 
     def test_cli_model_config_resolves_via_available_tools(self):
         """CLI-provided model config is resolved through _resolve_model_config."""
