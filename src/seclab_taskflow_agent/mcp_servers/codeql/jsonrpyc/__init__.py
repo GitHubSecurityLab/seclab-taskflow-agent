@@ -75,18 +75,18 @@ class Spec:
     """
 
     @classmethod
-    def check_id(cls, id: str | int | None, *, allow_empty: bool = False) -> None:
+    def check_id(cls, id_: str | int | None, *, allow_empty: bool = False) -> None:
         """
-        Value check for *id* entries. When *allow_empty* is *True*, *id* is allowed to be *None*.
-        Raises a *TypeError* when *id* is neither an integer nor a string.
+        Value check for *id_* entries. When *allow_empty* is *True*, *id_* is allowed to be *None*.
+        Raises a *TypeError* when *id_* is neither an integer nor a string.
 
-        :param id: The id to check.
-        :param allow_empty: Whether *id* is allowed to be *None*.
+        :param id_: The id to check.
+        :param allow_empty: Whether *id_* is allowed to be *None*.
         :return: None.
-        :raises TypeError: When *id* is invalid.
+        :raises TypeError: When *id_* is invalid.
         """
-        if (id is not None or not allow_empty) and not isinstance(id, (int, str)):
-            raise TypeError(f"id must be an integer or string, got {id} ({type(id)})")
+        if (id_ is not None or not allow_empty) and not isinstance(id_, (int, str)):
+            raise TypeError(f"id must be an integer or string, got {id_} ({type(id_)})")
 
     @classmethod
     def check_method(cls, method: str, /) -> None:
@@ -120,25 +120,25 @@ class Spec:
         cls,
         method: str,
         /,
-        id: str | int | None = None,
+        id_: str | int | None = None,
         *,
         params: dict[str, Any] | None = None,
     ) -> str:
         """
         Creates the string representation of a request that calls *method* with optional *params*
-        which are encoded by ``json.dumps``. When *id* is *None*, the request is considered a
+        which are encoded by ``json.dumps``. When *id_* is *None*, the request is considered a
         notification.
 
         :param method: The method to call.
-        :param id: The id of the request.
+        :param id_: The id of the request.
         :param params: The parameters of the request.
         :return: The request string.
-        :raises RPCInvalidRequest: When *method* or *id* are invalid.
+        :raises RPCInvalidRequest: When *method* or *id_* are invalid.
         :raises RPCParseError: When *params* could not be encoded.
         """
         try:
             cls.check_method(method)
-            cls.check_id(id, allow_empty=True)
+            cls.check_id(id_, allow_empty=True)
         except Exception as e:
             raise RPCInvalidRequest(str(e))
 
@@ -146,11 +146,11 @@ class Spec:
         req = f'{{"jsonrpc":"2.0","method":"{method}"'
 
         # add the id when given
-        if id is not None:
+        if id_ is not None:
             # encode string ids
-            if isinstance(id, str):
-                id = json.dumps(id)
-            req += f',"id":{id}'
+            if isinstance(id_, str):
+                id_ = json.dumps(id_)
+            req += f',"id":{id_}'
 
         # add parameters when given
         if params is not None:
@@ -165,29 +165,29 @@ class Spec:
         return req
 
     @classmethod
-    def response(cls, id: str | int | None, result: Any, /) -> str:
+    def response(cls, id_: str | int | None, result: Any, /) -> str:
         """
-        Creates the string representation of a respone that was triggered by a request with *id*.
+        Creates the string representation of a respone that was triggered by a request with *id_*.
         A *result* is required, even if it is *None*.
 
-        :param id: The id of the request that triggered this response.
+        :param id_: The id of the request that triggered this response.
         :param result: The result of the request.
         :return: The response string.
-        :raises RPCInvalidRequest: When *id* is invalid.
+        :raises RPCInvalidRequest: When *id_* is invalid.
         :raises RPCParseError: When *result* could not be encoded.
         """
         try:
-            cls.check_id(id)
+            cls.check_id(id_)
         except Exception as e:
             raise RPCInvalidRequest(str(e))
 
         # encode string ids
-        if isinstance(id, str):
-            id = json.dumps(id)
+        if isinstance(id_, str):
+            id_ = json.dumps(id_)
 
         # build the response string
         try:
-            res = f'{{"jsonrpc":"2.0","id":{id},"result":{json.dumps(result)}}}'
+            res = f'{{"jsonrpc":"2.0","id":{id_},"result":{json.dumps(result)}}}'
         except Exception as e:
             raise RPCParseError(str(e))
 
@@ -196,25 +196,25 @@ class Spec:
     @classmethod
     def error(
         cls,
-        id: str | int | None,
+        id_: str | int | None,
         code: int,
         *,
         data: Any | None = None,
     ) -> str:
         """
         Creates the string representation of an error that occured while processing a request with
-        *id*. *code* must lead to a registered :py:class:`RPCError`. *data* might contain
+        *id_*. *code* must lead to a registered :py:class:`RPCError`. *data* might contain
         additional, detailed error information and is encoded by ``json.dumps`` when set.
 
-        :param id: The id of the request that triggered this error.
+        :param id_: The id of the request that triggered this error.
         :param code: The error code.
         :param data: Additional error data.
         :return: The error string.
-        :raises RPCInvalidRequest: When *id* or *code* are invalid.
+        :raises RPCInvalidRequest: When *id_* or *code* are invalid.
         :raises RPCParseError: When *data* could not be encoded.
         """
         try:
-            cls.check_id(id)
+            cls.check_id(id_)
             cls.check_code(code)
         except Exception as e:
             raise RPCInvalidRequest(str(e))
@@ -233,11 +233,11 @@ class Spec:
             err_data += "}"
 
         # encode string ids
-        if isinstance(id, str):
-            id = json.dumps(id)
+        if isinstance(id_, str):
+            id_ = json.dumps(id_)
 
         # start building the error string
-        err = f'{{"jsonrpc":"2.0","id":{id},"error":{err_data}}}'
+        err = f'{{"jsonrpc":"2.0","id":{id_},"error":{err_data}}}'
 
         return err
 
@@ -441,7 +441,7 @@ class RPC:
 
         # create the request
         params = params if params else {"args": args, "kwargs": kwargs}
-        req = Spec.request(method, id=id, params=params)
+        req = Spec.request(method, id_=id, params=params)
         print(f"-> {req}")
         msg = f"Content-Length: {len(req)}\r\n\r\n{req}"
         self._write(msg)
