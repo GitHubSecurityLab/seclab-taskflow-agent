@@ -22,6 +22,8 @@ from . import jsonrpyc
 
 WAIT_INTERVAL = 0.1
 
+logger = logging.getLogger(__name__)
+
 
 # for when our stdout goes into the void
 def _debug_log(msg):
@@ -30,7 +32,7 @@ def _debug_log(msg):
 
 
 def shell_command_to_string(cmd):
-    print(f"Executing: {cmd}")
+    logger.debug(f"Executing: {cmd}")
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8")
     stdout, stderr = p.communicate()
     p.wait()
@@ -88,7 +90,7 @@ class CodeQL:
 
         # set some default callbacks for common notifications
         def _handle_ql_progressUpdated(params):
-            print(f">> Progress: {params.get('step')}/{params.get('maxStep')} status: {params.get('message')}")
+            logger.debug(f">> Progress: {params.get('step')}/{params.get('maxStep')} status: {params.get('message')}")
 
         ql_progressUpdated = "ql/progressUpdated"
         if ql_progressUpdated not in self.method_handlers:
@@ -150,7 +152,7 @@ class CodeQL:
             if err:
                 raise err
             self.active_database = database
-            print(f"++ {rpc_method}: {res}")
+            logger.debug(f"++ {rpc_method}: {res}")
 
         return self._server_rpc_call(
             rpc_method,
@@ -168,7 +170,7 @@ class CodeQL:
             if err:
                 raise err
             self.active_database = None
-            print(f"++ {rpc_method}: {res}")
+            logger.debug(f"++ {rpc_method}: {res}")
 
         return self._server_rpc_call(
             rpc_method,
@@ -232,25 +234,25 @@ class CodeQL:
                         case 0:
                             return False, ""
                         case 1:
-                            print(f"xx ERROR Other: {message}")
+                            logger.error(f"xx ERROR Other: {message}")
                             return True, message
                         case 2:
-                            print(f"xx ERROR Compilation: {message}")
+                            logger.error(f"xx ERROR Compilation: {message}")
                             return True, message
                         case 3:
-                            print(f"xx ERROR OOM: {message}")
+                            logger.error(f"xx ERROR OOM: {message}")
                             return True, message
                         case 4:
-                            print(f"xx ERROR Query Canceled: {message}")
+                            logger.error(f"xx ERROR Query Canceled: {message}")
                             return True, message
                         case 5:
-                            print(f"xx ERROR DB Scheme mismatch: {message}")
+                            logger.error(f"xx ERROR DB Scheme mismatch: {message}")
                             return True, message
                         case 6:
-                            print(f"xx ERROR DB Scheme no upgrade found: {message}")
+                            logger.error(f"xx ERROR DB Scheme no upgrade found: {message}")
                             return True, message
                         case _:
-                            print(f"xx ERROR: unknown result type {result_type}: {message}")
+                            logger.error(f"xx ERROR: unknown result type {result_type}: {message}")
                             return True, message
                 else:
                     return False, ""
@@ -260,7 +262,7 @@ class CodeQL:
             else:
                 self.active_query_error = (True, f"Unknown result state: {res}")
             self.active_query_id = None
-            print(f"++ {rpc_method}: {res}")
+            logger.debug(f"++ {rpc_method}: {res}")
             if err:
                 raise err
 
@@ -284,7 +286,7 @@ class CodeQL:
                 if match and match.group(2):
                     return match.group(2).split(":")
         except FileNotFoundError as e:
-            print(f"Error: {e}")
+            logger.error(f"Error: {e}")
         return []
 
     def _lang_server_contact(self):
@@ -310,7 +312,7 @@ class CodeQL:
         args = ["resolve", "library-path"]
         args += ["-v", "--log-to-stderr", "--format=json"]
         if search_path:
-            print(f"Using search path: {search_path}")
+            logger.debug(f"Using search path: {search_path}")
             args += [f'--additional-packs="{search_path}"']
         args += [f"--query={query_path}"]
         return json.loads(shell_command_to_string(self.codeql_cli + args))
@@ -364,7 +366,7 @@ class CodeQL:
             with open(csv_out) as f:
                 return f.read()
         except RuntimeError as e:
-            print(f"Could not decode {bqrs_path} to {csv_out}: {e}")
+            logger.error(f"Could not decode {bqrs_path} to {csv_out}: {e}")
             return ""
 
     def _bqrs_to_json(self, bqrs_path, entities):
@@ -377,7 +379,7 @@ class CodeQL:
             with open(json_out) as f:
                 return f.read()
         except RuntimeError as e:
-            print(f"Could not decode {bqrs_path} to {json_out}: {e}")
+            logger.error(f"Could not decode {bqrs_path} to {json_out}: {e}")
             return ""
 
     def _bqrs_to_sarif(self, bqrs_path, query_info, max_paths=10):
@@ -401,7 +403,7 @@ class CodeQL:
         ):
             with open(sarif_out) as f:
                 return f.read()
-        print(f"Could not decode {bqrs_path} to {sarif_out}")
+        logger.error(f"Could not decode {bqrs_path} to {sarif_out}")
         return ""
 
 
@@ -417,12 +419,12 @@ class QueryServer(CodeQL):
             return _ACTIVE_CODEQL_SERVERS[self.database]
         if not self.active_connection:
             self._server_start()
-        print("Waiting for server start ...")
+        logger.info("Waiting for server start ...")
         while not self.active_connection:
             time.sleep(WAIT_INTERVAL)
         if not self.active_database:
             self._server_register_database(self.database)
-        print("Waiting for database registration ...")
+        logger.info("Waiting for database registration ...")
         while not self.active_database:
             time.sleep(WAIT_INTERVAL)
         if self.keep_alive:
