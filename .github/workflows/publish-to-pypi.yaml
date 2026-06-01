@@ -10,8 +10,6 @@ jobs:
     name: Build distribution
     runs-on: ubuntu-latest
 
-    env:
-      GITHUB_REPO: ${{ github.repository }}
 
     permissions:
       contents: read
