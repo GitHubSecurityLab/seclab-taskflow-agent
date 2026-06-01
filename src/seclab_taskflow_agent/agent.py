@@ -151,6 +151,7 @@ class TaskAgent:
         name: str = "TaskAgent",
         instructions: str = "",
         handoffs: list[Any] | None = None,
+        *,
         exclude_from_context: bool = False,
         mcp_servers: list[Any] | None = None,
         model: str = DEFAULT_MODEL,
