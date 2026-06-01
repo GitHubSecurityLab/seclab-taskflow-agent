@@ -5,7 +5,7 @@ on:
     types: [created] # Add "smoke test" as a PR comment to trigger this workflow.
 
 # Permissions needed for reacting and adding comments for IssueOps commands
-# See: https://github.com/github/branch-deploy/blob/48285b12b35e47e2dde0c27d2abb33daa846d98b/README.md?plain=1#L189-L197
+# See: https://github.com/github/branch-deploy/blob/ddf8ca48e9cdb2d2c7c71dee428308b19af9313f/README.md?plain=1#L189-L197
 permissions:
   pull-requests: write # Required for commenting on PRs
   deployments: write # Required for updating deployment statuses
@@ -21,7 +21,7 @@ jobs:
     steps:
       - name: Branch Deploy
         id: branch-deploy
-        uses: github/branch-deploy@48285b12b35e47e2dde0c27d2abb33daa846d98b # v11.0.0
+        uses: github/branch-deploy@ddf8ca48e9cdb2d2c7c71dee428308b19af9313f # v11.1.4
         with:
           trigger: "smoke test"
           reaction: "eyes"
@@ -31,13 +31,13 @@ jobs:
 
       - name: Setup Python
         if: steps.branch-deploy.outputs.continue == 'true'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
 
       - name: Checkout the repo
         if: steps.branch-deploy.outputs.continue == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ steps.branch-deploy.outputs.sha }}
 
