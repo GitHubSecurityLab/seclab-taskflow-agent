@@ -167,7 +167,7 @@ def mcp_client_params(
             case "stdio":
                 env = dict(sp.env) if sp.env else None
                 args = list(sp.args) if sp.args else None
-                logging.debug(f"Initializing toolbox: {tb}\nargs:\n{args}\nenv:\n{env}\n")
+                logging.debug("Initializing toolbox: %s\nargs:\n%s\nenv:\n%s\n", tb, args, env)
                 if env:
                     for k, v in list(env.items()):
                         try:
@@ -182,11 +182,11 @@ def mcp_client_params(
                                       "http_proxy", "https_proxy", "no_proxy"):
                         if proxy_var not in env and proxy_var in os.environ:
                             env[proxy_var] = os.environ[proxy_var]
-                logging.debug(f"Tool call environment: {env}")
+                logging.debug("Tool call environment: %s", env)
                 if args:
                     for i, v in enumerate(args):
                         args[i] = swap_env(v)
-                logging.debug(f"Tool call args: {args}")
+                logging.debug("Tool call args: %s", args)
                 server_params["command"] = sp.command
                 server_params["args"] = args
                 server_params["env"] = env
@@ -206,7 +206,7 @@ def mcp_client_params(
                 if sp.command is not None:
                     env = dict(sp.env) if sp.env else None
                     args = list(sp.args) if sp.args else None
-                    logging.debug(f"Initializing streamable toolbox: {tb}\nargs:\n{args}\nenv:\n{env}\n")
+                    logging.debug("Initializing streamable toolbox: %s\nargs:\n%s\nenv:\n%s\n", tb, args, env)
                     exe = shutil.which(sp.command)
                     if exe is None:
                         raise FileNotFoundError(f"Could not resolve path to {sp.command}")

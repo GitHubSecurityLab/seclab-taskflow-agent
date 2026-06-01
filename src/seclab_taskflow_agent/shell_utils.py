@@ -18,7 +18,7 @@ def shell_command_to_string(cmd: list[str]) -> str:
     Raises:
         RuntimeError: If the command exits with a non-zero return code.
     """
-    logging.info(f"Executing: {cmd}")
+    logging.info("Executing: %s", cmd)
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8")
     stdout, stderr = p.communicate()
     p.wait()
