@@ -110,7 +110,8 @@ class TaskDefinition(BaseModel):
     @model_validator(mode="after")
     def _run_xor_prompt(self) -> TaskDefinition:
         if self.run and self.user_prompt:
-            raise ValueError("shell task ('run') and prompt task ('user_prompt') are mutually exclusive")
+            msg = "shell task ('run') and prompt task ('user_prompt') are mutually exclusive"
+            raise ValueError(msg)
         return self
 
 

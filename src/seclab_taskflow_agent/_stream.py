@@ -130,7 +130,8 @@ async def drive_backend_stream(
         except BackendRateLimitError as exc:
             last_rate_limit_exc = exc
             if rate_limit_backoff == max_rate_limit_backoff:
-                raise BackendTimeoutError("Max rate limit backoff reached") from exc
+                msg = "Max rate limit backoff reached"
+                raise BackendTimeoutError(msg) from exc
             if rate_limit_backoff > max_rate_limit_backoff:
                 rate_limit_backoff = max_rate_limit_backoff
             else:
@@ -139,4 +140,5 @@ async def drive_backend_stream(
             await asyncio.sleep(rate_limit_backoff)
 
     if last_rate_limit_exc is not None:  # pragma: no cover - loop always returns/raises above
-        raise BackendTimeoutError("Rate limit backoff exhausted") from last_rate_limit_exc
+        msg = "Rate limit backoff exhausted"
+        raise BackendTimeoutError(msg) from last_rate_limit_exc

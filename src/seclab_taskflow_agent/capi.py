@@ -193,7 +193,8 @@ def get_AI_token() -> str:
     token = os.getenv("COPILOT_TOKEN")
     if token:
         return token
-    raise RuntimeError("AI_API_TOKEN environment variable is not set.")
+    msg = "AI_API_TOKEN environment variable is not set."
+    raise RuntimeError(msg)
 
 
 # ---------------------------------------------------------------------------

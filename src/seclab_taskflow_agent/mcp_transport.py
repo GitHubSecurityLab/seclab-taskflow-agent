@@ -216,7 +216,8 @@ class StreamableMCPThread(Thread):
         """
         self.join(timeout)
         if self.is_alive():
-            raise RuntimeError("Process thread did not exit within timeout.")
+            msg = "Process thread did not exit within timeout."
+            raise RuntimeError(msg)
         if self.exception is not None:
             raise self.exception
 
