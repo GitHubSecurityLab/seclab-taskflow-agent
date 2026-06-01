@@ -60,6 +60,9 @@ class TaskflowSession(BaseModel):
     finished: bool = False
     error: str = ""
 
+    # CLI model config override persisted for deterministic resume
+    cli_model_config: str = ""
+
     # Accumulated tool results carried across tasks (used by repeat_prompt)
     last_tool_results: list[str] = Field(default_factory=list)
 
