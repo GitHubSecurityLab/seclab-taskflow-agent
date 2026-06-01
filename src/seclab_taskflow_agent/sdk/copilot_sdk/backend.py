@@ -66,9 +66,8 @@ def _normalize_model(model: str) -> str:
             about the model under test.
     """
     if not model:
-        raise BackendBadRequestError(
-            "copilot_sdk: model is required (the SDK would otherwise pick a default)"
-        )
+        msg = "copilot_sdk: model is required (the SDK would otherwise pick a default)"
+        raise BackendBadRequestError(msg)
     return model.split("/", 1)[1] if "/" in model else model
 
 
@@ -132,9 +131,8 @@ class CopilotSDKBackend:
         wire protocol per model.
         """
         if spec.handoffs or spec.in_handoff_graph:
-            raise BackendCapabilityError(
-                "copilot_sdk: agent handoffs are not supported"
-            )
+            msg = "copilot_sdk: agent handoffs are not supported"
+            raise BackendCapabilityError(msg)
         for unsupported in ("temperature", "parallel_tool_calls"):
             if unsupported in spec.model_settings:
                 raise BackendCapabilityError(

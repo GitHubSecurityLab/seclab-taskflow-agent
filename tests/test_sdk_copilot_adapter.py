@@ -261,7 +261,8 @@ def test_aclose_handles_none():
 def test_aclose_swallows_disconnect_failures():
     class _BadSession:
         async def disconnect(self) -> None:
-            raise RuntimeError("nope")
+            msg = "nope"
+            raise RuntimeError(msg)
 
     class _Client:
         async def stop(self) -> None:
