@@ -188,7 +188,6 @@ ignore = [
   "TRY003",   # Raise with inline message strings
 
   # Backwards-compatibility suppressions for existing code
-  "A001",     # Variable shadows built-in
   "A002",     # Argument shadows built-in
   "A004",     # Import shadows built-in
   "FBT001",   # Boolean positional arg
