@@ -87,6 +87,7 @@ class TaskflowSession(BaseModel):
         self,
         index: int,
         name: str,
+        *,
         success: bool,
         tool_results: list[str] | None = None,
     ) -> None:

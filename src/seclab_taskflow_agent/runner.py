@@ -168,6 +168,7 @@ def _resolve_task_model(
 
 async def _build_prompts_to_run(
     task_prompt: str,
+    *,
     repeat_prompt: bool,
     last_mcp_tool_results: list[str],
     available_tools: AvailableTools,
@@ -313,7 +314,12 @@ async def deploy_task_agents(
     model_params: dict[str, Any] = dict(model_par)
 
     # Build MCP servers and collect server prompts
-    entries = build_mcp_servers(available_tools, toolboxes, blocked_tools, headless)
+    entries = build_mcp_servers(
+        available_tools,
+        toolboxes,
+        blocked_tools=blocked_tools,
+        headless=headless,
+    )
     mcp_params = mcp_client_params(available_tools, toolboxes)
     server_prompts = [sp for _, (_, _, sp, _) in mcp_params.items()]
 
@@ -630,11 +636,15 @@ async def run_main(
 
             with TmpEnv(env, context={"globals": global_variables}):
                 prompts_to_run: list[str] = await _build_prompts_to_run(
-                    task_prompt, repeat_prompt, last_mcp_tool_results,
-                    available_tools, global_variables, inputs,
+                    task_prompt,
+                    repeat_prompt=repeat_prompt,
+                    last_mcp_tool_results=last_mcp_tool_results,
+                    available_tools=available_tools,
+                    global_variables=global_variables,
+                    inputs=inputs,
                 )
 
-                async def run_prompts(async_task: bool = False, max_concurrent_tasks: int = 5) -> bool:
+                async def run_prompts(*, async_task: bool = False, max_concurrent_tasks: int = 5) -> bool:
                     if run:
                         await render_model_output("** 🤖🐚 Executing Shell Task\n")
                         try:

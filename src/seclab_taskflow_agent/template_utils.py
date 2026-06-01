@@ -56,7 +56,7 @@ class PromptLoader(jinja2.BaseLoader):
             raise jinja2.TemplateNotFound(template)
 
 
-def env_function(var_name: str, default: Optional[str] = None, required: bool = True) -> str:
+def env_function(var_name: str, default: Optional[str] = None, *, required: bool = True) -> str:
     """Jinja2 function to access environment variables.
 
     Args:
