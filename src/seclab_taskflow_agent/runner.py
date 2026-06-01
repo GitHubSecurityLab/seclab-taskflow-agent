@@ -204,14 +204,14 @@ async def _build_prompts_to_run(
             logging.critical("No last MCP tool result available")
             raise
         except json.JSONDecodeError as exc:
-            logging.critical(f"Could not parse tool result as JSON: {last_mcp_tool_results[-1][:200]}")
+            logging.critical("Could not parse tool result as JSON: %s", last_mcp_tool_results[-1][:200])
             raise ValueError("Tool result is not valid JSON") from exc
 
         text = last_result.get("text", "")
         try:
             iterable_result = json.loads(text)
         except json.JSONDecodeError as exc:
-            logging.critical(f"Could not parse result text: {text}")
+            logging.critical("Could not parse result text: %s", text)
             raise ValueError("Result text is not valid JSON") from exc
         try:
             iter(iterable_result)
@@ -222,7 +222,7 @@ async def _build_prompts_to_run(
         if not iterable_result:
             await render_model_output("** 🤖❗MCP tool result iterable is empty!\n")
         else:
-            logging.debug(f"Rendering templated prompts for results: {iterable_result}")
+            logging.debug("Rendering templated prompts for results: %s", iterable_result)
             for value in iterable_result:
                 try:
                     rendered_prompt = render_template(
@@ -234,7 +234,7 @@ async def _build_prompts_to_run(
                     )
                     prompts_to_run.append(rendered_prompt)
                 except jinja2.TemplateError as e:
-                    logging.error(f"Error rendering template for result {value}: {e}")
+                    logging.error("Error rendering template for result %s: %s", value, e)
                     raise ValueError(f"Template rendering failed: {e}")
 
         # Consume only after all prompts rendered successfully so that
@@ -429,7 +429,7 @@ async def deploy_task_agents(
 
         except BackendMaxTurnsError as e:
             await render_model_output(f"** 🤖❗ Max Turns Reached: {e}\n", async_task=async_task, task_id=task_id)
-            logging.exception(f"Exceeded max_turns: {max_turns}")
+            logging.exception("Exceeded max_turns: %s", max_turns)
         except BackendUnexpectedError as e:
             await render_model_output(f"** 🤖❗ Agent Exception: {e}\n", async_task=async_task, task_id=task_id)
             logging.exception("Agent Exception")
@@ -625,7 +625,7 @@ async def run_main(
                         inputs_dict=inputs,
                     )
                 except jinja2.TemplateError as e:
-                    logging.error(f"Template rendering error: {e}")
+                    logging.error("Template rendering error: %s", e)
                     raise ValueError(f"Failed to render prompt template: {e}") from e
 
             with TmpEnv(env, context={"globals": global_variables}):
@@ -707,7 +707,7 @@ async def run_main(
                     complete = True
                     for result in task_results:
                         if not isinstance(result, bool):
-                            logging.error(f"Caught exception in Gather: {result}", exc_info=result)
+                            logging.error("Caught exception in Gather: %s", result, exc_info=result)
                             result = False
                         complete = result and complete
                     return complete
@@ -740,13 +740,15 @@ async def run_main(
                                 f"** 🤖🔄 Task {task_name!r} failed: {exc}\n"
                                 f"** 🤖🔄 Retrying in {backoff}s ({remaining} attempts left)\n"
                             )
-                            logging.warning(f"Task {task_name!r} attempt {attempt + 1} failed: {exc}")
+                            logging.warning("Task %r attempt %s failed: %s", task_name, attempt + 1, exc)
                             await asyncio.sleep(backoff)
                         else:
-                            logging.error(f"Task {task_name!r} failed after {TASK_RETRY_LIMIT} attempts: {exc}")
+                            logging.error(
+                                "Task %r failed after %s attempts: %s", task_name, TASK_RETRY_LIMIT, exc
+                            )
                     except Exception as exc:
                         last_task_error = exc
-                        logging.error(f"Task {task_name!r} failed (non-retriable): {exc}")
+                        logging.error("Task %r failed (non-retriable): %s", task_name, exc)
                         break
 
                 # If all retries exhausted with an exception, save and re-raise
