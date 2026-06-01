@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 
 from mcp.types import CallToolResult, TextContent
+from seclab_taskflow_agent.error_utils import error_with_message
 
 __all__ = ["shell_command_to_string", "shell_exec_with_temporary_file", "shell_tool_call"]
 
@@ -23,7 +24,7 @@ def shell_command_to_string(cmd: list[str]) -> str:
     stdout, stderr = p.communicate()
     p.wait()
     if p.returncode:
-        raise RuntimeError(f"Command {cmd} failed: {stderr}")
+        raise error_with_message(RuntimeError, f"Command {cmd} failed: {stderr}")
     return stdout
 
 

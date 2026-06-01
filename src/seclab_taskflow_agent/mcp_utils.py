@@ -28,6 +28,7 @@ from mcp.types import CallToolResult, TextContent
 
 from .available_tools import AvailableTools
 from .env_utils import swap_env
+from seclab_taskflow_agent.error_utils import error_with_message
 
 # Re-export transport classes and prompt builder so that existing
 # ``from .mcp_utils import …`` statements continue to work.
@@ -209,7 +210,7 @@ def mcp_client_params(
                     logging.debug(f"Initializing streamable toolbox: {tb}\nargs:\n{args}\nenv:\n{env}\n")
                     exe = shutil.which(sp.command)
                     if exe is None:
-                        raise FileNotFoundError(f"Could not resolve path to {sp.command}")
+                        raise error_with_message(FileNotFoundError, f"Could not resolve path to {sp.command}")
                     start_cmd = [exe]
                     if args:
                         for i, v in enumerate(args):
@@ -227,7 +228,7 @@ def mcp_client_params(
                     server_params["env"] = env
 
             case _:
-                raise ValueError(f"Unsupported MCP transport {kind}")
+                raise error_with_message(ValueError, f"Unsupported MCP transport {kind}")
 
         client_params[tb] = (
             server_params,

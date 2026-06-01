@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from seclab_taskflow_agent.error_utils import error_with_message
 
 __all__ = [
     "COPILOT_INTEGRATION_ID",
@@ -193,7 +194,7 @@ def get_AI_token() -> str:
     token = os.getenv("COPILOT_TOKEN")
     if token:
         return token
-    raise RuntimeError("AI_API_TOKEN environment variable is not set.")
+    raise error_with_message(RuntimeError, "AI_API_TOKEN environment variable is not set.")
 
 
 # ---------------------------------------------------------------------------

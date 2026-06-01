@@ -185,7 +185,6 @@ ignore = [
   "EM102",    # Exception f-strings
   "G004",     # Logging f-strings
   "T201",     # print() used for user output
-  "TRY003",   # Raise with inline message strings
 
   # Backwards-compatibility suppressions for existing code
   "A001",     # Variable shadows built-in
