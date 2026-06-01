@@ -1,0 +1,174 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: toolbox
+
+server_params:
+  kind: stdio
+  command: codeql-development-mcp-server
+  args: []
+  env:
+    CODEQL_PATH: "{{ env('CODEQL_CLI') }}"
+    CODEQL_DATABASES_BASE_DIRS: "{{ env('CODEQL_DBS_BASE_PATH') }}"
+    ENABLE_ANNOTATION_TOOLS: "true"
+    MONITORING_STORAGE_LOCATION: "{{ env('DATA_DIR') }}"
+    LOG_DIR: "{{ env('LOG_DIR') }}"
+server_prompt: |
+  ## CodeQL Development MCP Server (ql-mcp)
+
+  Comprehensive CodeQL analysis backend with 62 tools, 14 prompts, and
+  resources across 10 supported languages.
+
+  ## Supported Languages
+
+    - actions: GitHub Actions workflows
+    - cpp: C and C++
+    - csharp: C#
+    - go: Go
+    - java: Java (including Kotlin)
+    - javascript: JavaScript (including TypeScript)
+    - python: Python
+    - ruby: Ruby
+    - rust: Rust
+    - swift: Swift
+
+  If you cannot determine the language, ask the user.
+
+  ## Key Workflows
+
+  ### Reading Source Code from a Database
+
+  Use `read_database_source` to inspect source files inside a CodeQL database.
+  - Omit `filePath` to list all files in the database source archive
+  - Provide `filePath` to read a specific file's contents
+  This replaces any need for external file viewers when analyzing code
+  captured in a CodeQL database.
+
+  ### Discovering and Registering Databases
+
+  - `list_codeql_databases` — discover databases in configured base directories
+  - `register_database` — register a database by its local path
+  - `codeql_database_create` — create a new database from source code
+
+  ### Understanding Code Structure (Tool Queries)
+
+  Run via `codeql_query_run` with the `queryName` parameter:
+  - `PrintAST` — visualize how source code maps to CodeQL AST classes
+  - `PrintCFG` — visualize control flow for a function (`sourceFunction`)
+  - `CallGraphFrom` — outbound calls from a function (`sourceFunction`)
+  - `CallGraphTo` — inbound callers of a function (`targetFunction`)
+  - `CallGraphFromTo` — verify call paths between two functions
+
+  Always run `PrintAST` on test code before writing queries to understand
+  which QL classes represent which source constructs.
+
+  ### Running and Analyzing Queries
+
+  - `codeql_query_run` — execute a query against a database
+  - `codeql_database_analyze` — run query suites, produce SARIF output
+  - `codeql_bqrs_decode` — decode binary query results (text, csv, json)
+  - `codeql_bqrs_interpret` — interpret BQRS into SARIF or CSV
+  - `codeql_bqrs_info` — get result set metadata and row counts
+
+  ### SARIF Analysis
+
+  - `sarif_list_rules` — list rules with result counts, severity, tags
+  - `sarif_extract_rule` — extract per-rule SARIF subset
+  - `sarif_rule_to_markdown` — generate markdown with Mermaid dataflow diagrams
+  - `sarif_compare_alerts` — compare alerts for location overlap
+    (modes: `sink`, `source`, `any-location`, `full-path`)
+  - `sarif_diff_runs` — diff two SARIF files for behavioral changes
+
+  SARIF output is only produced for queries with `@kind problem` or
+  `@kind path-problem` (path-problem is preferred — it carries dataflow paths
+  that `sarif_rule_to_markdown` renders as Mermaid diagrams). Queries with
+  `@kind graph` do not emit SARIF, so:
+  - `PrintAST` and `PrintCFG` (`@kind graph`) are NOT compatible with SARIF
+    tools or with automatic SARIF parsing/caching — decode their BQRS results
+    with `codeql_bqrs_decode` instead.
+  - `CallGraphFrom`, `CallGraphTo`, and `CallGraphFromTo` (`@kind problem`)
+    ARE compatible with SARIF output and the full SARIF tool pipeline.
+
+  Recommended pipeline for triaging analysis output:
+  1. `codeql_database_analyze` → produces SARIF (for problem / path-problem
+     queries only)
+  2. `sarif_list_rules` → identify which rules fired and how often
+  3. `sarif_extract_rule` → narrow to a specific rule's results
+  4. `sarif_rule_to_markdown` → render alerts with dataflow diagrams for review
+  5. `sarif_compare_alerts` / `sarif_diff_runs` → deduplicate across runs or
+     detect regressions when iterating on queries or comparing MRVA results
+
+  ### Query Development (TDD)
+
+  1. `create_codeql_query` — scaffold query, test files, and `.qlref`
+  2. `codeql_pack_install` — install pack dependencies
+  3. Write test code with positive and negative cases
+  4. `codeql_test_run` — run tests (expect initial failure)
+  5. Implement query logic
+  6. `codeql_query_compile` — validate syntax
+  7. `codeql_test_run` — iterate until tests pass
+  8. `codeql_test_accept` — accept correct results as baseline
+
+  Use `quick_evaluate` to test individual predicates or classes against a
+  database without running the full query. Use `find_predicate_position` or
+  `find_class_position` to locate symbols (returns 1-based positions).
+
+  ### LSP Tools (CodeQL Language Server)
+
+  For exploring CodeQL libraries and iterative query development:
+  - `codeql_lsp_completion` — code completions at a cursor position
+  - `codeql_lsp_definition` — jump to symbol definition
+  - `codeql_lsp_references` — find all references to a symbol
+  - `codeql_lsp_diagnostics` — syntax and semantic validation
+  - `codeql_lsp_document_symbols` — list symbols in a file
+
+  Important: LSP tools use 0-based line/character positions. The
+  `workspace_uri` parameter must be a plain directory path to the pack root
+  containing `codeql-pack.yml` (not a file:// URI). Run `codeql_pack_install`
+  before using LSP tools. `codeql_lsp_diagnostics` cannot resolve imports —
+  use `codeql_query_compile` for files with imports.
+
+  ### Discovering and Searching QL Code
+
+  - `search_ql_code` — search QL source files for text or regex patterns
+  - `codeql_resolve_files` — find QL files by extension and glob patterns
+  - `validate_codeql_query` — quick heuristic structural check
+
+  ### Audit & Annotation Tools
+
+  For managing findings across repositories (MRVA triage workflows):
+  - `audit_store_findings` — store findings with owner, repo, sourceLocation, line
+  - `audit_list_findings` — list findings for a repository
+  - `audit_add_notes` — append analyst notes to a finding
+  - `audit_clear_repo` — clear all findings for a repository
+
+  General-purpose annotations:
+  - `annotation_create` — create notes/bookmarks on any entity
+  - `annotation_get` — retrieve annotation by ID
+  - `annotation_list` — list with category/entity/prefix filters
+  - `annotation_update` — update content or metadata
+  - `annotation_delete` — delete by ID, category, or prefix
+  - `annotation_search` — full-text search across annotations
+
+  ### Query Result Cache
+
+  Results are auto-cached after `codeql_query_run` and `codeql_database_analyze`:
+  - `query_results_cache_lookup` — check if results exist (metadata only)
+  - `query_results_cache_retrieve` — get results with subset selection
+  - `query_results_cache_clear` — clear cached results
+  - `query_results_cache_compare` — compare results across databases
+
+  ## Database Path Convention
+
+  Provide database paths relative to the configured `CODEQL_DATABASES_BASE_DIRS`
+  or as absolute filesystem paths. Use `list_codeql_databases` to discover
+  available databases.
+
+  ## Source File URI Convention
+
+  When tool results reference source locations, they use the URI scheme
+  `file:///path/to/file` optionally with a region suffix
+  `file:///path/to/file:startLine:startCol:endLine:endCol` (1-based).
+  Use `read_database_source` with the file path to read the source content.
