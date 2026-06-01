@@ -5,7 +5,7 @@ on:
     types: [created] # Add "smoke test" as a PR comment to trigger this workflow.
 
 # Permissions needed for reacting and adding comments for IssueOps commands
-# See: https://github.com/github/branch-deploy/blob/48285b12b35e47e2dde0c27d2abb33daa846d98b/README.md?plain=1#L189-L197
+# See: https://github.com/github/branch-deploy/blob/ddf8ca48e9cdb2d2c7c71dee428308b19af9313f/README.md?plain=1#L189-L197
 permissions:
   pull-requests: write # Required for commenting on PRs
   deployments: write # Required for updating deployment statuses
