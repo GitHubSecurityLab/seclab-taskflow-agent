@@ -9,9 +9,6 @@ jobs:
     outputs:
       release_name: ${{ steps.create_version_number.outputs.RELEASE_NAME }}
 
-    env:
-      GITHUB_REPO: ${{ github.repository }}
-
     permissions:
       contents: read
 
