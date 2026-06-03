@@ -45,7 +45,7 @@ class CodeQL:
         codeql_cli=os.getenv("CODEQL_CLI", default="codeql"),
         server_options=["--threads=0", "--quiet"],
         *,
-        log_stderr,
+        log_stderr: bool,
     ):
         self.server_options = server_options.copy()
         if log_stderr:
@@ -407,7 +407,7 @@ class CodeQL:
 
 
 class QueryServer(CodeQL):
-    def __init__(self, database: Path, keep_alive, log_stderr):
+    def __init__(self, database: Path, keep_alive: bool, log_stderr: bool):
         super().__init__(log_stderr=log_stderr)
         self.database = database
         self.keep_alive = keep_alive
@@ -598,8 +598,8 @@ def run_query(
     template_values=None,
     # keep the query server alive if desired
     *,
-    keep_alive,
-    log_stderr,
+    keep_alive: bool,
+    log_stderr: bool,
 ):
     result = ""
     query_path = Path(query_path)

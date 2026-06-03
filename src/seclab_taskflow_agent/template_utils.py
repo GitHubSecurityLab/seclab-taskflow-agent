@@ -107,7 +107,13 @@ def create_jinja_environment(available_tools: "AvailableTools") -> jinja2.Enviro
     )
 
     # Register custom functions
-    env.globals["env"] = lambda var_name, default=None: env_function(var_name, default, required=True)
+    env.globals["env"] = (
+        lambda var_name, default=None, required=None: env_function(
+            var_name,
+            default,
+            required=True if required is None else required,
+        )
+    )
 
     return env
 
