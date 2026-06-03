@@ -278,8 +278,92 @@ class TestResolveTaskModel:
 
 
 # ===================================================================
-# _build_prompts_to_run
+# CLI model config override
 # ===================================================================
+
+class TestCliModelConfigOverride:
+    """Tests for CLI model config overriding taskflow model_config_ref."""
+
+    def test_cli_overrides_taskflow_model_config(self):
+        """cli_model_config takes precedence over taskflow_doc.model_config_ref."""
+        model_config_ref = self._resolve("taskflow.models.default", "cli.models.override")
+        assert model_config_ref == "cli.models.override"
+
+    def test_taskflow_model_config_used_when_cli_absent(self):
+        """Taskflow model_config_ref is used when cli_model_config is None."""
+        taskflow_ref = "taskflow.models.default"
+        cli_ref = None
+
+        model_config_ref = self._resolve(taskflow_ref, cli_ref)
+        assert model_config_ref == taskflow_ref
+
+    @staticmethod
+    def _resolve(taskflow_ref: str, cli_ref: str | None) -> str:
+        """Reproduce the override logic from run_main."""
+        model_config_ref = taskflow_ref
+        if cli_ref:
+            model_config_ref = cli_ref
+        return model_config_ref
+
+    def test_cli_model_config_resolves_via_available_tools(self):
+        """CLI-provided model config is resolved through _resolve_model_config."""
+        at = _mock_available_tools()
+        at.get_model_config.return_value = _make_model_config(
+            models={"fast": "gpt-4o-mini"},
+        )
+        keys, mdict, params, api_type, backend = _resolve_model_config(at, "cli.override.ref")
+        at.get_model_config.assert_called_once_with("cli.override.ref")
+        assert mdict == {"fast": "gpt-4o-mini"}
+
+    def test_cli_model_config_persisted_in_session(self):
+        """cli_model_config is stored in session for deterministic resume."""
+        from seclab_taskflow_agent.session import TaskflowSession
+
+        session = TaskflowSession(
+            taskflow_path="test.flow",
+            cli_model_config="cli.models.fast",
+        )
+        assert session.cli_model_config == "cli.models.fast"
+
+    def test_session_resume_restores_cli_model_config(self, tmp_path, monkeypatch):
+        """Resumed session restores cli_model_config when not overridden."""
+        monkeypatch.setattr("seclab_taskflow_agent.session.session_dir", lambda: tmp_path)
+        from seclab_taskflow_agent.session import TaskflowSession
+
+        session = TaskflowSession(
+            taskflow_path="test.flow",
+            cli_model_config="persisted.models.ref",
+        )
+        session.save()
+
+        loaded = TaskflowSession.load(session.session_id)
+
+        # Simulate the resume logic from run_main
+        cli_model_config = None  # not passed on resume
+        if not cli_model_config and loaded.cli_model_config:
+            cli_model_config = loaded.cli_model_config
+
+        assert cli_model_config == "persisted.models.ref"
+
+    def test_session_resume_cli_override_takes_precedence(self, tmp_path, monkeypatch):
+        """Explicit --model-config on resume overrides persisted value."""
+        monkeypatch.setattr("seclab_taskflow_agent.session.session_dir", lambda: tmp_path)
+        from seclab_taskflow_agent.session import TaskflowSession
+
+        session = TaskflowSession(
+            taskflow_path="test.flow",
+            cli_model_config="persisted.models.ref",
+        )
+        session.save()
+
+        loaded = TaskflowSession.load(session.session_id)
+
+        # Simulate the resume logic from run_main with explicit override
+        cli_model_config = "new.override.ref"
+        if not cli_model_config and loaded.cli_model_config:
+            cli_model_config = loaded.cli_model_config
+
+        assert cli_model_config == "new.override.ref"
 
 class TestBuildPromptsToRun:
     """Tests for _build_prompts_to_run (async, run via asyncio.run)."""

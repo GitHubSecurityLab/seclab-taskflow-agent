@@ -61,19 +61,19 @@ class TaskRunHooks(RunHooks):
 
     async def on_agent_start(self, context: RunContextWrapper[TContext], agent: Agent[TContext]) -> None:
         """Called when an agent begins execution."""
-        logging.debug(f"TaskRunHooks on_agent_start: {agent.name}")
+        logging.debug("TaskRunHooks on_agent_start: %s", agent.name)
         if self._on_agent_start:
             await self._on_agent_start(context, agent)
 
     async def on_agent_end(self, context: RunContextWrapper[TContext], agent: Agent[TContext], output: Any) -> None:
         """Called when an agent finishes execution."""
-        logging.debug(f"TaskRunHooks on_agent_end: {agent.name}")
+        logging.debug("TaskRunHooks on_agent_end: %s", agent.name)
         if self._on_agent_end:
             await self._on_agent_end(context, agent, output)
 
     async def on_tool_start(self, context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool) -> None:
         """Called before a tool invocation begins."""
-        logging.debug(f"TaskRunHooks on_tool_start: {tool.name}")
+        logging.debug("TaskRunHooks on_tool_start: %s", tool.name)
         if self._on_tool_start:
             await self._on_tool_start(context, agent, tool)
 
@@ -81,7 +81,7 @@ class TaskRunHooks(RunHooks):
         self, context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool, result: str
     ) -> None:
         """Called after a tool invocation completes."""
-        logging.debug(f"TaskRunHooks on_tool_end: {tool.name} ")
+        logging.debug("TaskRunHooks on_tool_end: %s ", tool.name)
         if self._on_tool_end:
             await self._on_tool_end(context, agent, tool, result)
 
@@ -108,25 +108,25 @@ class TaskAgentHooks(AgentHooks):
         self, context: RunContextWrapper[TContext], agent: Agent[TContext], source: Agent[TContext]
     ) -> None:
         """Called when control is handed off from one agent to another."""
-        logging.debug(f"TaskAgentHooks on_handoff: {source.name} -> {agent.name}")
+        logging.debug("TaskAgentHooks on_handoff: %s -> %s", source.name, agent.name)
         if self._on_handoff:
             await self._on_handoff(context, agent, source)
 
     async def on_start(self, context: RunContextWrapper[TContext], agent: Agent[TContext]) -> None:
         """Called when the agent starts processing."""
-        logging.debug(f"TaskAgentHooks on_start: {agent.name}")
+        logging.debug("TaskAgentHooks on_start: %s", agent.name)
         if self._on_start:
             await self._on_start(context, agent)
 
     async def on_end(self, context: RunContextWrapper[TContext], agent: Agent[TContext], output: Any) -> None:
         """Called when the agent finishes processing."""
-        logging.debug(f"TaskAgentHooks on_end: {agent.name}")
+        logging.debug("TaskAgentHooks on_end: %s", agent.name)
         if self._on_end:
             await self._on_end(context, agent, output)
 
     async def on_tool_start(self, context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool) -> None:
         """Called before a tool invocation begins."""
-        logging.debug(f"TaskAgentHooks on_tool_start: {tool.name}")
+        logging.debug("TaskAgentHooks on_tool_start: %s", tool.name)
         if self._on_tool_start:
             await self._on_tool_start(context, agent, tool)
 
@@ -134,7 +134,7 @@ class TaskAgentHooks(AgentHooks):
         self, context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool, result: str
     ) -> None:
         """Called after a tool invocation completes."""
-        logging.debug(f"TaskAgentHooks on_tool_end: {tool.name}")
+        logging.debug("TaskAgentHooks on_tool_end: %s", tool.name)
         if self._on_tool_end:
             await self._on_tool_end(context, agent, tool, result)
 

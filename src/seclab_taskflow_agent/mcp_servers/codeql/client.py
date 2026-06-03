@@ -487,7 +487,7 @@ def _get_source_prefix(database_path: Path, strip_leading_slash=True) -> str:
                 source_prefix = source_prefix.lstrip("/")
             return source_prefix
         except (yaml.YAMLError, FileNotFoundError, KeyError) as e:
-            logging.error(f"Error parsing sourceLocationPrefix: {e}")
+            logging.error("Error parsing sourceLocationPrefix: %s", e)
             raise
 
 
