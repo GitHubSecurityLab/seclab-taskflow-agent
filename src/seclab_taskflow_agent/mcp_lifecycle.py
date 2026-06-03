@@ -97,10 +97,10 @@ def build_mcp_servers(
                 if "command" in params:
 
                     def _print_out(line: str) -> None:
-                        logging.info(f"Streamable MCP Server stdout: {line}")
+                        logging.info("Streamable MCP Server stdout: %s", line)
 
                     def _print_err(line: str) -> None:
-                        logging.info(f"Streamable MCP Server stderr: {line}")
+                        logging.info("Streamable MCP Server stderr: %s", line)
 
                     server_proc = StreamableMCPThread(
                         params["command"],
@@ -137,7 +137,7 @@ async def mcp_session_task(
     """
     try:
         for entry in entries:
-            logging.debug(f"Connecting mcp server: {entry.name}")
+            logging.debug("Connecting mcp server: %s", entry.name)
             if entry.process is not None:
                 entry.process.start()
                 await entry.process.async_wait_for_connection(poll_interval=0.1)
@@ -148,17 +148,17 @@ async def mcp_session_task(
 
         for entry in list(reversed(entries)):
             try:
-                logging.debug(f"Starting cleanup for mcp server: {entry.name}")
+                logging.debug("Starting cleanup for mcp server: %s", entry.name)
                 await entry.server.cleanup()
-                logging.debug(f"Cleaned up mcp server: {entry.name}")
+                logging.debug("Cleaned up mcp server: %s", entry.name)
                 if entry.process is not None:
                     entry.process.stop()
                     try:
                         await asyncio.to_thread(entry.process.join_and_raise)
                     except Exception as e:
-                        logging.warning(f"Streamable mcp server process exception: {e}")
+                        logging.warning("Streamable mcp server process exception: %s", e)
             except asyncio.CancelledError:
-                logging.exception(f"Timeout on cleanup for mcp server: {entry.name}")
+                logging.exception("Timeout on cleanup for mcp server: %s", entry.name)
     except RuntimeError:
         logging.exception("RuntimeError in mcp session task")
     except asyncio.CancelledError:

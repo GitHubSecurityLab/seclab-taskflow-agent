@@ -135,7 +135,7 @@ async def drive_backend_stream(
                 rate_limit_backoff = max_rate_limit_backoff
             else:
                 rate_limit_backoff += rate_limit_backoff
-            logging.exception(f"Hit rate limit ... holding for {rate_limit_backoff}")
+            logging.exception("Hit rate limit ... holding for %s", rate_limit_backoff)
             await asyncio.sleep(rate_limit_backoff)
 
     if last_rate_limit_exc is not None:  # pragma: no cover - loop always returns/raises above

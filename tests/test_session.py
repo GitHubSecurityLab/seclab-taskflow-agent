@@ -78,6 +78,23 @@ class TestTaskflowSession:
         assert s1.session_id in ids
         assert s2.session_id in ids
 
+    def test_cli_model_config_persisted(self, tmp_path, monkeypatch):
+        """cli_model_config is persisted and restored on load."""
+        monkeypatch.setattr("seclab_taskflow_agent.session.session_dir", lambda: tmp_path)
+        s = TaskflowSession(
+            taskflow_path="examples.taskflows.echo",
+            cli_model_config="custom.models.fast",
+        )
+        s.save()
+
+        loaded = TaskflowSession.load(s.session_id)
+        assert loaded.cli_model_config == "custom.models.fast"
+
+    def test_cli_model_config_defaults_empty(self):
+        """cli_model_config defaults to empty string."""
+        s = TaskflowSession(taskflow_path="test.flow")
+        assert s.cli_model_config == ""
+
 
 class TestCompletedTask:
     """Tests for CompletedTask model."""
