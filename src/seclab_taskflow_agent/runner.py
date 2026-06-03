@@ -220,7 +220,7 @@ async def _build_prompts_to_run(
             raise
 
         if not iterable_result:
-            await render_model_output("** 🤖❗MCP tool result iterable is empty!\n")
+            await render_model_output("** 🤖❗MCP tool result iterable is empty!\n", log=True, async_task=False, task_id=None)
         else:
             logging.debug("Rendering templated prompts for results: %s", iterable_result)
             for value in iterable_result:
@@ -286,11 +286,21 @@ async def deploy_task_agents(
     blocked_tools = blocked_tools or []
 
     task_id = str(uuid.uuid4())
-    await render_model_output(f"** 🤖💪 Deploying Task Flow Agent(s): {list(agents.keys())}\n")
-    await render_model_output(f"** 🤖💪 Task ID : {task_id}\n")
-    await render_model_output(f"** 🤖💪 Model   : {model}{', params: ' + str(model_par) if model_par else ''}\n")
+    await render_model_output(
+        f"** 🤖💪 Deploying Task Flow Agent(s): {list(agents.keys())}\n",
+        log=True,
+        async_task=False,
+        task_id=None,
+    )
+    await render_model_output(f"** 🤖💪 Task ID : {task_id}\n", log=True, async_task=False, task_id=None)
+    await render_model_output(
+        f"** 🤖💪 Model   : {model}{', params: ' + str(model_par) if model_par else ''}\n",
+        log=True,
+        async_task=False,
+        task_id=None,
+    )
     if endpoint:
-        await render_model_output(f"** 🤖💪 Endpoint: {endpoint}\n")
+        await render_model_output(f"** 🤖💪 Endpoint: {endpoint}\n", log=True, async_task=False, task_id=None)
 
     # Resolve toolboxes from personality definitions or override
     toolboxes: list[str] = []
@@ -313,7 +323,7 @@ async def deploy_task_agents(
     model_params: dict[str, Any] = dict(model_par)
 
     # Build MCP servers and collect server prompts
-    entries = build_mcp_servers(available_tools, toolboxes, blocked_tools, headless)
+    entries = build_mcp_servers(available_tools, toolboxes, blocked_tools, headless=headless)
     mcp_params = mcp_client_params(available_tools, toolboxes)
     server_prompts = [sp for _, (_, _, sp, _) in mcp_params.items()]
 
@@ -428,16 +438,24 @@ async def deploy_task_agents(
             complete = True
 
         except BackendMaxTurnsError as e:
-            await render_model_output(f"** 🤖❗ Max Turns Reached: {e}\n", async_task=async_task, task_id=task_id)
+            await render_model_output(
+                f"** 🤖❗ Max Turns Reached: {e}\n", log=True, async_task=async_task, task_id=task_id
+            )
             logging.exception("Exceeded max_turns: %s", max_turns)
         except BackendUnexpectedError as e:
-            await render_model_output(f"** 🤖❗ Agent Exception: {e}\n", async_task=async_task, task_id=task_id)
+            await render_model_output(
+                f"** 🤖❗ Agent Exception: {e}\n", log=True, async_task=async_task, task_id=task_id
+            )
             logging.exception("Agent Exception")
         except BackendBadRequestError as e:
-            await render_model_output(f"** 🤖❗ Request Error: {e}\n", async_task=async_task, task_id=task_id)
+            await render_model_output(
+                f"** 🤖❗ Request Error: {e}\n", log=True, async_task=async_task, task_id=task_id
+            )
             logging.exception("Bad Request")
         except BackendTimeoutError as e:
-            await render_model_output(f"** 🤖❗ Timeout Error: {e}\n", async_task=async_task, task_id=task_id)
+            await render_model_output(
+                f"** 🤖❗ Timeout Error: {e}\n", log=True, async_task=async_task, task_id=task_id
+            )
             logging.exception("API Timeout")
 
         if async_task:
@@ -519,10 +537,12 @@ async def run_main(
 
     async def on_tool_start_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool) -> None:
         watchdog_ping()
-        await render_model_output(f"\n** 🤖🛠️ Tool Call: {tool.name}\n")
+        await render_model_output(f"\n** 🤖🛠️ Tool Call: {tool.name}\n", log=True, async_task=False, task_id=None)
 
     async def on_handoff_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], source: Agent[TContext]) -> None:
-        await render_model_output(f"\n** 🤖🤝 Agent Handoff: {source.name} -> {agent.name}\n")
+        await render_model_output(
+            f"\n** 🤖🤝 Agent Handoff: {source.name} -> {agent.name}\n", log=True, async_task=False, task_id=None
+        )
 
     if personality_path:
         personality = available_tools.get_personality(personality_path)
@@ -539,7 +559,9 @@ async def run_main(
         if resume_session_id:
             session = TaskflowSession.load(resume_session_id)
             if session.finished:
-                await render_model_output(f"** 🤖✅ Session {resume_session_id} already completed\n")
+                await render_model_output(
+                    f"** 🤖✅ Session {resume_session_id} already completed\n", log=True, async_task=False, task_id=None
+                )
                 return
             taskflow_path = session.taskflow_path
             cli_globals = session.cli_globals
@@ -549,11 +571,14 @@ async def run_main(
             if not cli_model_config and session.cli_model_config:
                 cli_model_config = session.cli_model_config
             await render_model_output(
-                f"** 🤖🔄 Resuming session {resume_session_id} from task {session.next_task_index}\n"
+                f"** 🤖🔄 Resuming session {resume_session_id} from task {session.next_task_index}\n",
+                log=True,
+                async_task=False,
+                task_id=None,
             )
 
         taskflow_doc = available_tools.get_taskflow(taskflow_path)
-        await render_model_output(f"** 🤖💪 Running Task Flow: {taskflow_path}\n")
+        await render_model_output(f"** 🤖💪 Running Task Flow: {taskflow_path}\n", log=True, async_task=False, task_id=None)
 
         # Resolve global variables (file defaults + CLI overrides)
         global_variables = dict(taskflow_doc.globals or {})
@@ -584,13 +609,16 @@ async def run_main(
                 cli_model_config=cli_model_config or "",
             )
             session.save()
-            await render_model_output(f"** 🤖📋 Session: {session.session_id}\n")
+            await render_model_output(f"** 🤖📋 Session: {session.session_id}\n", log=True, async_task=False, task_id=None)
 
         for task_index, task_wrapper in enumerate(taskflow_doc.taskflow):
             # Skip already-completed tasks on resume
             if task_index < session.next_task_index:
                 await render_model_output(
-                    f"** 🤖⏭️ Skipping completed task {task_index}\n"
+                    f"** 🤖⏭️ Skipping completed task {task_index}\n",
+                    log=True,
+                    async_task=False,
+                    task_id=None,
                 )
                 continue
 
@@ -642,15 +670,17 @@ async def run_main(
                     available_tools, global_variables, inputs,
                 )
 
-                async def run_prompts(async_task: bool = False, max_concurrent_tasks: int = 5) -> bool:
+                async def run_prompts(async_task: bool, max_concurrent_tasks: int = 5) -> bool:
                     if run:
-                        await render_model_output("** 🤖🐚 Executing Shell Task\n")
+                        await render_model_output("** 🤖🐚 Executing Shell Task\n", log=True, async_task=False, task_id=None)
                         try:
                             result = shell_tool_call(run).content[0].model_dump_json()
                             last_mcp_tool_results.append(result)
                             return True
                         except RuntimeError as e:
-                            await render_model_output(f"** 🤖❗ Shell Task Exception: {e}\n")
+                            await render_model_output(
+                                f"** 🤖❗ Shell Task Exception: {e}\n", log=True, async_task=False, task_id=None
+                            )
                             logging.exception("Shell task error")
                             return False
 
@@ -746,7 +776,10 @@ async def run_main(
                             backoff = TASK_RETRY_BACKOFF * (attempt + 1)
                             await render_model_output(
                                 f"** 🤖🔄 Task {task_name!r} failed: {exc}\n"
-                                f"** 🤖🔄 Retrying in {backoff}s ({remaining} attempts left)\n"
+                                f"** 🤖🔄 Retrying in {backoff}s ({remaining} attempts left)\n",
+                                log=True,
+                                async_task=False,
+                                task_id=None,
                             )
                             logging.warning("Task %r attempt %s failed: %s", task_name, attempt + 1, exc)
                             await asyncio.sleep(backoff)
@@ -764,17 +797,23 @@ async def run_main(
                     session.mark_failed(f"Task {task_name!r}: {last_task_error}")
                     await render_model_output(
                         f"** 🤖💾 Session saved: {session.session_id}\n"
-                        f"** 🤖💡 Resume with: --resume {session.session_id}\n"
+                        f"** 🤖💡 Resume with: --resume {session.session_id}\n",
+                        log=True,
+                        async_task=False,
+                        task_id=None,
                     )
                     raise last_task_error
 
                 if must_complete and not task_complete:
                     logging.critical("Required task not completed ... aborting!")
-                    await render_model_output("🤖💥 *Required task not completed ...\n")
+                    await render_model_output("🤖💥 *Required task not completed ...\n", log=True, async_task=False, task_id=None)
                     session.mark_failed(f"Required task {task_name!r} did not complete")
                     await render_model_output(
                         f"** 🤖💾 Session saved: {session.session_id}\n"
-                        f"** 🤖💡 Resume with: --resume {session.session_id}\n"
+                        f"** 🤖💡 Resume with: --resume {session.session_id}\n",
+                        log=True,
+                        async_task=False,
+                        task_id=None,
                     )
                     break
 
@@ -790,4 +829,4 @@ async def run_main(
         # All tasks completed successfully
         if session is not None and not session.error:
             session.mark_finished()
-            await render_model_output(f"** 🤖✅ Session {session.session_id} completed\n")
+            await render_model_output(f"** 🤖✅ Session {session.session_id} completed\n", log=True, async_task=False, task_id=None)

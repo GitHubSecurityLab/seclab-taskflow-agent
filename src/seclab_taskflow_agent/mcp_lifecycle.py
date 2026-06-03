@@ -45,7 +45,8 @@ def build_mcp_servers(
     available_tools: AvailableTools,
     toolboxes: list[str],
     blocked_tools: list[str] | None = None,
-    headless: bool = False,
+    *,
+    headless: bool,
 ) -> list[MCPServerEntry]:
     """Build MCP server instances for the given toolboxes.
 

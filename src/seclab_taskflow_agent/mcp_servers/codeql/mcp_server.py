@@ -115,6 +115,7 @@ def _run_query(query_name: str, database_path: str, language: str, template_valu
             database_path,
             fmt="csv",
             template_values=template_values,
+            keep_alive=True,
             log_stderr=True,
         )
         return _csv_to_json_obj(csv)
@@ -150,7 +151,7 @@ def list_source_files(
 ):
     """List the available source files in a CodeQL database using their file:// URI"""
     database_path = _resolve_db_path(database_path)
-    results = list_src_files(database_path, as_uri=True)
+    results = list_src_files(database_path, as_uri=True, strip_prefix=True)
     return json.dumps([{"uri": item} for item in results if re.search(regex_filter, item)], indent=2)
 
 
@@ -163,7 +164,7 @@ def search_in_source_code(
     Search for a string in the source code. Returns the line number and file.
     """
     resolved_database_path = _resolve_db_path(database_path)
-    results = search_in_src_archive(resolved_database_path, search_term)
+    results = search_in_src_archive(resolved_database_path, search_term, as_uri=False, strip_prefix=True)
     out = []
     if isinstance(results, dict):
         for k, v in results.items():

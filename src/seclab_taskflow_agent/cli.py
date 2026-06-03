@@ -91,7 +91,7 @@ def main(
     list_models: Annotated[
         bool,
         typer.Option("-l", "--list-models", help="List available tool-call models and exit."),
-    ] = False,
+    ] = typer.Option(False),
     globals_: Annotated[
         list[str] | None,
         typer.Option("-g", "--global", help="Global variable as KEY=VALUE. Repeatable."),
@@ -99,7 +99,7 @@ def main(
     debug: Annotated[
         bool,
         typer.Option("-d", "--debug", help="Show full tracebacks on errors."),
-    ] = False,
+    ] = typer.Option(False),
     resume: Annotated[
         str | None,
         typer.Option("--resume", help="Resume a previous session by its ID."),

@@ -56,7 +56,7 @@ class PromptLoader(jinja2.BaseLoader):
             raise jinja2.TemplateNotFound(template)
 
 
-def env_function(var_name: str, default: Optional[str] = None, required: bool = True) -> str:
+def env_function(var_name: str, default: Optional[str], required: bool) -> str:
     """Jinja2 function to access environment variables.
 
     Args:
@@ -107,7 +107,7 @@ def create_jinja_environment(available_tools: "AvailableTools") -> jinja2.Enviro
     )
 
     # Register custom functions
-    env.globals['env'] = env_function
+    env.globals["env"] = lambda var_name, default=None: env_function(var_name, default, required=True)
 
     return env
 

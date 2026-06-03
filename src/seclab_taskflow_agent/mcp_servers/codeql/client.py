@@ -44,7 +44,8 @@ class CodeQL:
         self,
         codeql_cli=os.getenv("CODEQL_CLI", default="codeql"),
         server_options=["--threads=0", "--quiet"],
-        log_stderr=False,
+        *,
+        log_stderr,
     ):
         self.server_options = server_options.copy()
         if log_stderr:
@@ -406,7 +407,7 @@ class CodeQL:
 
 
 class QueryServer(CodeQL):
-    def __init__(self, database: Path, keep_alive=False, log_stderr=False):
+    def __init__(self, database: Path, keep_alive, log_stderr):
         super().__init__(log_stderr=log_stderr)
         self.database = database
         self.keep_alive = keep_alive
@@ -476,7 +477,7 @@ def _file_uri_to_path(uri):
     return path, region
 
 
-def _get_source_prefix(database_path: Path, strip_leading_slash=True) -> str:
+def _get_source_prefix(database_path: Path, strip_leading_slash: bool) -> str:
     # grab the source prefix from codeql-database.yml
     db_yml_path = Path(database_path) / Path("codeql-database.yml")
     with open(db_yml_path) as stream:
@@ -491,10 +492,10 @@ def _get_source_prefix(database_path: Path, strip_leading_slash=True) -> str:
             raise
 
 
-def list_src_files(database_path: str | Path, as_uri=False, strip_prefix=True):
+def list_src_files(database_path: str | Path, as_uri: bool, strip_prefix: bool):
     src_path = Path(database_path) / Path("src.zip")
     files = shell_command_to_string(["zipinfo", "-1", src_path]).split("\n")
-    source_prefix = _get_source_prefix(Path(database_path))
+    source_prefix = _get_source_prefix(Path(database_path), strip_leading_slash=True)
     # file:// uri are formatted absolute paths even if they're relative
     files = [
         f"{'file:///' if as_uri else ''}{path.strip().removeprefix(source_prefix if strip_prefix else '')}"
@@ -503,11 +504,11 @@ def list_src_files(database_path: str | Path, as_uri=False, strip_prefix=True):
     return files
 
 
-def search_in_src_archive(database_path: str, search_term: str, as_uri=False, strip_prefix=True):
+def search_in_src_archive(database_path: str, search_term: str, as_uri: bool, strip_prefix: bool):
     database_path = Path(database_path)
     src_path = database_path / Path("src.zip")
     results = {}
-    source_prefix = _get_source_prefix(database_path)
+    source_prefix = _get_source_prefix(database_path, strip_leading_slash=True)
     with zipfile.ZipFile(src_path) as z:
         for entry in z.infolist():
             if entry.is_dir():
@@ -528,7 +529,7 @@ def _file_from_src_archive(relative_path: str | Path, database_path: str | Path,
     # our shell utility is Popen based, so no expansions occur
     database_path = Path(database_path)
     src_path = database_path / Path("src.zip")
-    source_prefix = _get_source_prefix(Path(database_path))
+    source_prefix = _get_source_prefix(Path(database_path), strip_leading_slash=True)
     # normalize relative path
     relative_path = Path(str(relative_path).lstrip("/").removeprefix(source_prefix))
     resolved_path = Path(source_prefix) / Path(relative_path)
@@ -596,8 +597,9 @@ def run_query(
     progress_callback=None,
     template_values=None,
     # keep the query server alive if desired
-    keep_alive=True,
-    log_stderr=False,
+    *,
+    keep_alive,
+    log_stderr,
 ):
     result = ""
     query_path = Path(query_path)

@@ -106,7 +106,7 @@ async def drive_backend_stream(
                     watchdog_ping()
                     if isinstance(event, TextDelta):
                         await render_model_output(
-                            event.text, async_task=async_task, task_id=task_id
+                            event.text, log=True, async_task=async_task, task_id=task_id
                         )
                     elif isinstance(event, ToolEnd):
                         await bridge_copilot_tool_event(event, run_hooks)
@@ -120,7 +120,7 @@ async def drive_backend_stream(
                         await aclose()
                     except Exception:  # noqa: BLE001 - best-effort cleanup
                         logging.exception("Failed to aclose backend stream iterator")
-            await render_model_output("\n\n", async_task=async_task, task_id=task_id)
+            await render_model_output("\n\n", log=True, async_task=async_task, task_id=task_id)
             return
         except BackendTimeoutError:
             if not max_retry:

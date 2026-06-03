@@ -27,11 +27,11 @@ async def flush_async_output(task_id: str) -> None:
             # No buffered output (agent may have failed before producing any).
             return
         data = async_output.pop(task_id)
-    await render_model_output(f"** 🤖✏️ Output for async task: {task_id}\n\n")
-    await render_model_output(data)
+    await render_model_output(f"** 🤖✏️ Output for async task: {task_id}\n\n", log=True, async_task=False, task_id=None)
+    await render_model_output(data, log=True, async_task=False, task_id=None)
 
 
-async def render_model_output(data: str, log: bool = True, async_task: bool = False, task_id: str | None = None) -> None:
+async def render_model_output(data: str, log: bool, async_task: bool, task_id: str | None = None) -> None:
     """Print model output to the console, optionally buffering for async tasks."""
     async with async_output_lock:
         if async_task and task_id:

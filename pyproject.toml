@@ -190,7 +190,6 @@ ignore = [
   "A001",     # Variable shadows built-in
   "A002",     # Argument shadows built-in
   "FBT001",   # Boolean positional arg
-  "FBT002",   # Boolean default value
   "N801",     # Class name casing
   "N802",     # Function name casing
   "N806",     # Variable casing
