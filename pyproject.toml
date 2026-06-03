@@ -189,7 +189,6 @@ ignore = [
   # Backwards-compatibility suppressions for existing code
   "A001",     # Variable shadows built-in
   "A002",     # Argument shadows built-in
-  "A004",     # Import shadows built-in
   "FBT001",   # Boolean positional arg
   "FBT002",   # Boolean default value
   "N801",     # Class name casing
