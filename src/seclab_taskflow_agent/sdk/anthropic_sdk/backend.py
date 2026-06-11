@@ -17,7 +17,6 @@ from __future__ import annotations
 
 __all__ = ["AnthropicSDKBackend"]
 
-import json
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -93,6 +92,7 @@ class _AnthropicHandle:
     mcp_server_map: dict[str, Any]  # tool_name -> MCP server handle
     model_settings: dict[str, Any] = field(default_factory=dict)
     stream_thinking: bool = False
+    exclude_from_context: bool = False
 
 
 class AnthropicSDKBackend:
@@ -163,6 +163,7 @@ class AnthropicSDKBackend:
             mcp_server_map=mcp_server_map,
             model_settings=spec.model_settings,
             stream_thinking=stream_thinking,
+            exclude_from_context=spec.exclude_from_context,
         )
 
     async def run_streamed(
@@ -179,10 +180,24 @@ class AnthropicSDKBackend:
 
         # Build optional params
         create_kwargs: dict[str, Any] = {}
+
+        # Pass through temperature/top_p if set
+        temperature = handle.model_settings.get("temperature")
+        if temperature is not None:
+            create_kwargs["temperature"] = float(temperature)
+        top_p = handle.model_settings.get("top_p")
+        if top_p is not None:
+            create_kwargs["top_p"] = float(top_p)
+
         reasoning = handle.model_settings.get("reasoning")
         if isinstance(reasoning, dict):
             effort = reasoning.get("effort")
             if effort:
+                if effort not in _VALID_REASONING:
+                    raise BackendBadRequestError(
+                        f"anthropic_sdk: invalid reasoning effort {effort!r} "
+                        f"(expected one of {_VALID_REASONING})"
+                    )
                 create_kwargs["thinking"] = {"type": "adaptive"}
                 create_kwargs["output_config"] = {"effort": effort}
 
@@ -273,6 +288,12 @@ class AnthropicSDKBackend:
                         "is_error": True,
                     })
                     yield ToolEnd(tool_name=tool_name, text=error_text)
+
+            # exclude_from_context: stop after tool results are emitted
+            # so they are available to the runner but not fed back into
+            # the model context (matches copilot_sdk behavior).
+            if handle.exclude_from_context:
+                return
 
             messages.append({"role": "user", "content": tool_results})
 
