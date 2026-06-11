@@ -524,6 +524,7 @@ api_type: chat_completions        # default for all models
 models:
   gpt_default: gpt-4.1
   gpt_responses: gpt-5.1
+  claude_native: claude-mythos-5
 model_settings:
   gpt_default:
     temperature: 0.7
@@ -532,6 +533,10 @@ model_settings:
     endpoint: https://api.githubcopilot.com
     token: CAPI_TOKEN             # env var name containing the API key
     temperature: 0.5
+  claude_native:
+    backend: anthropic_sdk        # use the Anthropic Messages API
+    reasoning:
+      effort: high
 ```
 
 The following keys in `model_settings` are handled by the engine and are not
@@ -539,9 +544,10 @@ passed to the underlying model provider:
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `api_type` | `"chat_completions"` or `"responses"` | Inherited from top-level `api_type`, or `"chat_completions"` |
+| `api_type` | `"chat_completions"`, `"responses"`, or `"messages"` | Inherited from top-level `api_type`, or `"chat_completions"` |
+| `backend` | SDK adapter: `"openai_agents"`, `"copilot_sdk"`, or `"anthropic_sdk"` | Inherited from top-level `backend`, or `"openai_agents"` |
 | `endpoint` | API base URL for this model | The global `AI_API_ENDPOINT` env var |
 | `token` | Name of an environment variable containing the API key | Uses `AI_API_TOKEN` / `COPILOT_TOKEN` |
 
-All other keys (e.g. `temperature`, `top_p`) are passed through as model
-parameters to the OpenAI SDK.
+All other keys (e.g. `temperature`, `top_p`, `reasoning`) are passed through as
+model parameters to the selected SDK backend.

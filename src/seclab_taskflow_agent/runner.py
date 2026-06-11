@@ -126,12 +126,12 @@ def _resolve_task_model(
     model_dict: dict[str, str],
     models_params: dict[str, dict[str, Any]],
     default_api_type: str = "chat_completions",
-) -> tuple[str, dict[str, Any], str, str | None, str | None]:
+) -> tuple[str, dict[str, Any], str, str | None, str | None, str | None]:
     """Resolve the final model name, settings, and per-model overrides.
 
     Returns:
-        A tuple of ``(model_id, model_settings, api_type, endpoint, token)``
-        where *endpoint* and *token* are ``None`` when not overridden.
+        A tuple of ``(model_id, model_settings, api_type, endpoint, token, backend)``
+        where *endpoint*, *token*, and *backend* are ``None`` when not overridden.
 
     Raises:
         ValueError: If task-level model_settings is not a dictionary.
@@ -141,6 +141,7 @@ def _resolve_task_model(
     api_type: str = default_api_type
     endpoint: str | None = None
     token: str | None = None
+    backend: str | None = None
 
     if logical_name in model_keys:
         if logical_name in models_params:
@@ -151,6 +152,7 @@ def _resolve_task_model(
     api_type = model_settings.pop("api_type", api_type)
     endpoint = model_settings.pop("endpoint", None)
     token = model_settings.pop("token", None)
+    backend = model_settings.pop("backend", None)
 
     task_model_settings: dict[str, Any] | Any = task.model_settings or {}
     if not isinstance(task_model_settings, dict):
@@ -161,9 +163,10 @@ def _resolve_task_model(
     api_type = task_settings.pop("api_type", api_type)
     endpoint = task_settings.pop("endpoint", endpoint)
     token = task_settings.pop("token", token)
+    backend = task_settings.pop("backend", backend)
 
     model_settings.update(task_settings)
-    return logical_name, model_settings, api_type, endpoint, token
+    return logical_name, model_settings, api_type, endpoint, token, backend
 
 
 async def _build_prompts_to_run(
@@ -600,8 +603,8 @@ async def run_main(
             if task.uses:
                 task = _merge_reusable_task(available_tools, task)
 
-            # Resolve model (name, settings, api_type, optional endpoint/token)
-            model, model_settings, task_api_type, task_endpoint, task_token = _resolve_task_model(
+            # Resolve model (name, settings, api_type, optional endpoint/token/backend)
+            model, model_settings, task_api_type, task_endpoint, task_token, task_backend = _resolve_task_model(
                 task, model_keys, model_dict, models_params, default_api_type=api_type,
             )
 
@@ -697,7 +700,7 @@ async def run_main(
                                     api_type=task_api_type,
                                     endpoint=task_endpoint,
                                     token=task_token,
-                                    backend=backend,
+                                    backend=task_backend or backend,
                                     agent_hooks=TaskAgentHooks(on_handoff=on_handoff_hook),
                                 )
 

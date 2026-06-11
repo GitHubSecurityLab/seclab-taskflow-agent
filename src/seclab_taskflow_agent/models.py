@@ -31,10 +31,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Valid API type values for model configuration.
-ApiType = Literal["chat_completions", "responses"]
+ApiType = Literal["chat_completions", "responses", "messages"]
 
 # Valid backend names. Must stay in sync with ``sdk._KNOWN``.
-BackendSdk = Literal["openai_agents", "copilot_sdk"]
+BackendSdk = Literal["openai_agents", "copilot_sdk", "anthropic_sdk"]
 
 
 # ---------------------------------------------------------------------------

@@ -33,7 +33,7 @@ from .base import (
 )
 
 _ENV_VAR = "SECLAB_TASKFLOW_BACKEND"
-_KNOWN = ("openai_agents", "copilot_sdk")
+_KNOWN = ("openai_agents", "copilot_sdk", "anthropic_sdk")
 _BACKENDS: dict[str, AgentBackend] = {}
 
 
@@ -46,10 +46,14 @@ def get_backend(name: str) -> AgentBackend:
             from .openai_agents.backend import OpenAIAgentsBackend
 
             _BACKENDS[name] = OpenAIAgentsBackend()
-        else:
+        elif name == "copilot_sdk":
             from .copilot_sdk.backend import CopilotSDKBackend
 
             _BACKENDS[name] = CopilotSDKBackend()
+        else:
+            from .anthropic_sdk.backend import AnthropicSDKBackend
+
+            _BACKENDS[name] = AnthropicSDKBackend()
     return _BACKENDS[name]
 
 
