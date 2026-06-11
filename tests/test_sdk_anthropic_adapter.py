@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from seclab_taskflow_agent.sdk import get_backend
-from seclab_taskflow_agent.sdk.base import AgentSpec, MCPServerSpec, TextDelta, ToolEnd
+from seclab_taskflow_agent.sdk.base import AgentSpec
 from seclab_taskflow_agent.sdk.anthropic_sdk.backend import (
     AnthropicSDKBackend,
     _mcp_tools_to_anthropic,
@@ -74,10 +74,10 @@ def test_validate_accepts_exclude_from_context():
 
 
 class _FakeTool:
-    def __init__(self, name, description=None, inputSchema=None):
+    def __init__(self, name, description=None, input_schema=None):  # noqa: N803
         self.name = name
         self.description = description
-        self.inputSchema = inputSchema
+        self.inputSchema = input_schema
 
 
 def test_mcp_tools_to_anthropic_basic():
@@ -112,7 +112,7 @@ def test_mcp_tools_to_anthropic_no_schema():
 
 def test_mcp_tools_to_anthropic_none_schema():
     """Tools with None inputSchema should get a default empty object schema."""
-    tools = [_FakeTool("my_tool", "desc", inputSchema=None)]
+    tools = [_FakeTool("my_tool", "desc", input_schema=None)]
     result = _mcp_tools_to_anthropic(tools)
     assert result[0]["input_schema"] == {"type": "object", "properties": {}}
 
