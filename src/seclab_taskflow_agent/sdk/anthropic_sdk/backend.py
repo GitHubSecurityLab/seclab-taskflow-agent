@@ -124,7 +124,7 @@ class AnthropicSDKBackend:
         endpoint = spec.endpoint or _resolve_endpoint()
 
         client = anthropic.AsyncAnthropic(
-            api_key="placeholder",
+            api_key=token,
             base_url=endpoint,
             default_headers={
                 "Authorization": f"Bearer {token}",
