@@ -134,20 +134,47 @@ class AnthropicSDKBackend:
             },
         )
 
-        # Collect tools from MCP servers
+        # Collect tools from MCP servers and apply blocked_tools filter.
+        # We filter tools ourselves rather than relying on the openai-agents
+        # SDK's tool_filter, which requires run_context/agent args that
+        # aren't available outside the openai-agents run loop.
         all_tools: list[dict[str, Any]] = []
         mcp_server_map: dict[str, Any] = {}
+        blocked = set(spec.blocked_tools or [])
 
         for mcp_spec in spec.mcp_servers:
             native_server = mcp_spec.params.get("_native")
             if native_server is None:
                 continue
             try:
-                mcp_tools = await native_server.list_tools()
-                anthropic_tools = _mcp_tools_to_anthropic(mcp_tools)
-                all_tools.extend(anthropic_tools)
+                # Access the underlying MCP session to get the raw tool
+                # list, bypassing the openai-agents tool_filter that
+                # requires run_context/agent we don't have.
+                raw_server = getattr(native_server, "_obj", native_server)
+                session = getattr(raw_server, "session", None)
+                if session is not None:
+                    result = await session.list_tools()
+                    raw_tools = result.tools
+                else:
+                    raw_tools = await native_server.list_tools()
+
+                # Apply namespace prefix (NamespacedMCPServer convention)
+                ns = getattr(native_server, "namespace", "")
+                mcp_tools = []
+                for tool in raw_tools:
+                    if hasattr(tool, "copy"):
+                        tool = tool.copy()
+                    if ns:
+                        tool.name = f"{ns}{tool.name}"
+                    mcp_tools.append(tool)
+
                 for tool in mcp_tools:
-                    mcp_server_map[tool.name] = native_server
+                    if tool.name not in blocked:
+                        mcp_server_map[tool.name] = native_server
+                anthropic_tools = _mcp_tools_to_anthropic(
+                    [t for t in mcp_tools if t.name not in blocked]
+                )
+                all_tools.extend(anthropic_tools)
             except Exception:
                 logger.exception("Failed to list tools from MCP server %s", mcp_spec.name)
 
