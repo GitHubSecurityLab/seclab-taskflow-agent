@@ -218,8 +218,8 @@ class TestResolveTaskModel:
         assert settings["max_tokens"] == 100
 
     def test_engine_keys_extracted(self):
-        """Engine keys (api_type, endpoint, token) are popped from settings."""
-        _, settings, api_type, endpoint, token, _ = _resolve_task_model(
+        """Engine keys (api_type, endpoint, token, backend) are popped from settings."""
+        _, settings, api_type, endpoint, token, backend = _resolve_task_model(
             TaskDefinition(model="fast"),
             model_keys=["fast"],
             model_dict={"fast": "gpt-4o-mini"},
@@ -228,6 +228,7 @@ class TestResolveTaskModel:
                     "api_type": "responses",
                     "endpoint": "https://custom.api",
                     "token": "secret",
+                    "backend": "anthropic_sdk",
                     "temperature": 0.5,
                 }
             },
@@ -235,9 +236,11 @@ class TestResolveTaskModel:
         assert api_type == "responses"
         assert endpoint == "https://custom.api"
         assert token == "secret"  # noqa: S105
+        assert backend == "anthropic_sdk"
         assert "api_type" not in settings
         assert "endpoint" not in settings
         assert "token" not in settings
+        assert "backend" not in settings
         assert settings["temperature"] == 0.5
 
     def test_default_model_when_empty(self):
@@ -264,17 +267,18 @@ class TestResolveTaskModel:
 
     def test_task_engine_keys_override_config(self):
         """Task-level model_settings can override engine keys from config."""
-        _, _, api_type, endpoint, token, _ = _resolve_task_model(
+        _, _, api_type, endpoint, token, backend = _resolve_task_model(
             TaskDefinition(
                 model="fast",
-                model_settings={"api_type": "responses", "endpoint": "https://task.api"},
+                model_settings={"api_type": "responses", "endpoint": "https://task.api", "backend": "anthropic_sdk"},
             ),
             model_keys=["fast"],
             model_dict={"fast": "gpt-4o-mini"},
-            models_params={"fast": {"api_type": "chat_completions"}},
+            models_params={"fast": {"api_type": "chat_completions", "backend": "openai_agents"}},
         )
         assert api_type == "responses"
         assert endpoint == "https://task.api"
+        assert backend == "anthropic_sdk"
 
 
 # ===================================================================
