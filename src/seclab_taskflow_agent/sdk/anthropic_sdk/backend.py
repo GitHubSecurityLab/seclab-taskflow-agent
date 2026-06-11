@@ -62,9 +62,10 @@ def _mcp_tools_to_anthropic(tools: list[Any]) -> list[dict[str, Any]]:
     anthropic_tools = []
     for tool in tools:
         schema = tool.inputSchema if hasattr(tool, "inputSchema") else {}
+        description = getattr(tool, "description", None) or tool.name
         anthropic_tools.append({
             "name": tool.name,
-            "description": getattr(tool, "description", tool.name),
+            "description": description,
             "input_schema": schema or {"type": "object", "properties": {}},
         })
     return anthropic_tools
