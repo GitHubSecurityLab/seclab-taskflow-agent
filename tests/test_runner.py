@@ -187,7 +187,7 @@ class TestResolveTaskModel:
 
     def test_logical_name_mapped_to_provider_id(self):
         """A logical model name is resolved to the provider model ID."""
-        model_id, _, _, _, _ = _resolve_task_model(
+        model_id, _, _, _, _, _ = _resolve_task_model(
             TaskDefinition(model="fast"),
             model_keys=["fast"],
             model_dict={"fast": "gpt-4o-mini"},
@@ -197,7 +197,7 @@ class TestResolveTaskModel:
 
     def test_model_settings_from_config(self):
         """Settings from models_params are included in the result."""
-        _, settings, _, _, _ = _resolve_task_model(
+        _, settings, _, _, _, _ = _resolve_task_model(
             TaskDefinition(model="fast"),
             model_keys=["fast"],
             model_dict={"fast": "gpt-4o-mini"},
@@ -208,7 +208,7 @@ class TestResolveTaskModel:
 
     def test_task_level_settings_override_config(self):
         """Task-level model_settings override config-level settings."""
-        _, settings, _, _, _ = _resolve_task_model(
+        _, settings, _, _, _, _ = _resolve_task_model(
             TaskDefinition(model="fast", model_settings={"temperature": 0.2}),
             model_keys=["fast"],
             model_dict={"fast": "gpt-4o-mini"},
@@ -219,7 +219,7 @@ class TestResolveTaskModel:
 
     def test_engine_keys_extracted(self):
         """Engine keys (api_type, endpoint, token) are popped from settings."""
-        _, settings, api_type, endpoint, token = _resolve_task_model(
+        _, settings, api_type, endpoint, token, _ = _resolve_task_model(
             TaskDefinition(model="fast"),
             model_keys=["fast"],
             model_dict={"fast": "gpt-4o-mini"},
@@ -244,7 +244,7 @@ class TestResolveTaskModel:
         """Empty model string falls back to DEFAULT_MODEL."""
         from seclab_taskflow_agent.agent import DEFAULT_MODEL
 
-        model_id, _, _, _, _ = _resolve_task_model(
+        model_id, _, _, _, _, _ = _resolve_task_model(
             TaskDefinition(model=""),
             model_keys=[],
             model_dict={},
@@ -254,7 +254,7 @@ class TestResolveTaskModel:
 
     def test_model_not_in_keys_passes_through(self):
         """A model name not in model_keys passes through as-is."""
-        model_id, _, _, _, _ = _resolve_task_model(
+        model_id, _, _, _, _, _ = _resolve_task_model(
             TaskDefinition(model="claude-3-opus"),
             model_keys=["fast", "smart"],
             model_dict={"fast": "gpt-4o-mini", "smart": "gpt-4o"},
@@ -264,7 +264,7 @@ class TestResolveTaskModel:
 
     def test_task_engine_keys_override_config(self):
         """Task-level model_settings can override engine keys from config."""
-        _, _, api_type, endpoint, token = _resolve_task_model(
+        _, _, api_type, endpoint, token, _ = _resolve_task_model(
             TaskDefinition(
                 model="fast",
                 model_settings={"api_type": "responses", "endpoint": "https://task.api"},

@@ -524,7 +524,7 @@ api_type: chat_completions        # default for all models
 models:
   gpt_default: gpt-4.1
   gpt_responses: gpt-5.1
-  claude_native: claude-mythos-5
+  claude_native: claude-opus-4.7
 model_settings:
   gpt_default:
     temperature: 0.7
@@ -534,7 +534,8 @@ model_settings:
     token: CAPI_TOKEN             # env var name containing the API key
     temperature: 0.5
   claude_native:
-    backend: anthropic_sdk        # use the Anthropic Messages API
+    api_type: messages            # use the Anthropic Messages API
+    backend: anthropic_sdk
     reasoning:
       effort: high
 ```

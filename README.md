@@ -116,10 +116,11 @@ seclab-taskflow-agent:
   version: "1.0"
   filetype: model_config
 models:
-  code_analysis: claude-mythos-5
+  code_analysis: claude-opus-4.7
   general_tasks: gpt-5.4-mini
 model_settings:
   code_analysis:
+    api_type: messages
     backend: anthropic_sdk
     reasoning:
       effort: high
