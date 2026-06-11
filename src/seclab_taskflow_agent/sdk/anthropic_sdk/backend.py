@@ -127,7 +127,11 @@ class AnthropicSDKBackend:
         # placeholder api_key so the SDK doesn't send the real token
         # via x-api-key as well. For direct Anthropic endpoints, pass
         # the real token as api_key (the SDK's native auth).
-        is_capi = "githubcopilot.com" in endpoint
+        from urllib.parse import urlparse
+        is_capi = urlparse(endpoint).hostname in (
+            "api.githubcopilot.com",
+            "models.github.ai",
+        )
         headers: dict[str, str] = {}
         if is_capi:
             headers["Authorization"] = f"Bearer {token}"
