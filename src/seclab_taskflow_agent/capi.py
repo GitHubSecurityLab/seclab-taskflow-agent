@@ -29,6 +29,7 @@ __all__ = [
     "get_AI_endpoint",
     "get_AI_token",
     "get_provider",
+    "is_capi_endpoint",
     "list_capi_models",
     "list_tool_call_models",
     "supports_tool_calls",
@@ -141,6 +142,14 @@ _PROVIDERS: dict[str, APIProvider] = {
 }
 
 _DEFAULT_PROVIDER = "api.githubcopilot.com"
+
+# Hostnames that use CAPI-style auth (Authorization: Bearer, not x-api-key).
+_CAPI_HOSTS = frozenset(_PROVIDERS.keys())
+
+
+def is_capi_endpoint(endpoint: str) -> bool:
+    """Return True if *endpoint* is a GitHub CAPI proxy (needs Bearer auth)."""
+    return urlparse(endpoint).hostname in _CAPI_HOSTS
 
 def get_provider(endpoint: str | None = None) -> APIProvider:
     """Return the ``APIProvider`` for the given (or configured) endpoint URL.

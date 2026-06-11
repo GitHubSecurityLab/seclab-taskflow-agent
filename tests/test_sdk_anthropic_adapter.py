@@ -81,7 +81,13 @@ class _FakeTool:
 
 
 def test_mcp_tools_to_anthropic_basic():
-    tools = [_FakeTool("read_file", "Read a file", {"type": "object", "properties": {"path": {"type": "string"}}})]
+    tools = [
+        _FakeTool(
+            "read_file",
+            "Read a file",
+            {"type": "object", "properties": {"path": {"type": "string"}}},
+        )
+    ]
     result = _mcp_tools_to_anthropic(tools)
     assert len(result) == 1
     assert result[0]["name"] == "read_file"
@@ -180,7 +186,33 @@ def test_valid_reasoning_values():
 def test_invalid_reasoning_effort_not_in_valid():
     """Invalid reasoning.effort values should not be in _VALID_REASONING."""
     from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _VALID_REASONING
+
     assert "ultra" not in _VALID_REASONING
     assert "high" in _VALID_REASONING
     assert "low" in _VALID_REASONING
     assert "max" in _VALID_REASONING
+
+
+def test_invalid_reasoning_effort_raises_at_runtime():
+    """run_streamed raises BackendBadRequestError for invalid effort."""
+    import asyncio
+
+    from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
+
+    handle = _AnthropicHandle(
+        client=None,
+        system_prompt="",
+        model="test",
+        max_tokens=100,
+        tools=[],
+        mcp_server_map={},
+        model_settings={"reasoning": {"effort": "ultra"}},
+    )
+    backend = AnthropicSDKBackend()
+
+    async def _run():
+        async for _ in backend.run_streamed(handle, "hi", max_turns=1):
+            pass
+
+    with pytest.raises(BackendBadRequestError, match="invalid reasoning effort"):
+        asyncio.run(_run())
