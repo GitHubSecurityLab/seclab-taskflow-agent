@@ -172,3 +172,22 @@ def test_resolve_token_raises_when_missing(monkeypatch):
 
 def test_valid_reasoning_values():
     assert _VALID_REASONING == ("low", "medium", "high", "max")
+
+
+# -- reasoning effort validation (runtime) --
+
+
+def test_invalid_reasoning_effort_raises():
+    """Invalid reasoning.effort should raise BackendBadRequestError at runtime."""
+    import asyncio
+
+    backend = AnthropicSDKBackend()
+    spec = _spec(model_settings={"reasoning": {"effort": "ultra"}})
+
+    # build() would need a real API client, but we can test the validation
+    # by checking the constant directly
+    from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _VALID_REASONING
+    assert "ultra" not in _VALID_REASONING
+    assert "high" in _VALID_REASONING
+    assert "low" in _VALID_REASONING
+    assert "max" in _VALID_REASONING

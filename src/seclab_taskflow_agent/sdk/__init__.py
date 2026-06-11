@@ -50,10 +50,12 @@ def get_backend(name: str) -> AgentBackend:
             from .copilot_sdk.backend import CopilotSDKBackend
 
             _BACKENDS[name] = CopilotSDKBackend()
-        else:
+        elif name == "anthropic_sdk":
             from .anthropic_sdk.backend import AnthropicSDKBackend
 
             _BACKENDS[name] = AnthropicSDKBackend()
+        else:
+            raise ValueError(f"No backend implementation for {name!r}")
     return _BACKENDS[name]
 
 
