@@ -111,7 +111,7 @@ class _OpenAIProvider(APIProvider):
     we maintain a prefix allowlist of known chat-completion model families.
     """
 
-    _CHAT_PREFIXES = ("gpt-3.5", "gpt-4", "o1", "o3", "o4", "chatgpt-")
+    _CHAT_PREFIXES = ("gpt-3.5", "gpt-4", "gpt-5", "o1", "o3", "o4", "chatgpt-")
 
     def check_tool_calls(self, _model: str, model_info: dict) -> bool:
         model_id = model_info.get("id", "").lower()
