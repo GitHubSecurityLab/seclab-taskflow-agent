@@ -227,3 +227,157 @@ def test_invalid_reasoning_effort_raises_at_runtime():
 
     with pytest.raises(BackendBadRequestError, match="invalid reasoning effort"):
         asyncio.run(_run())
+
+
+# -- prompt caching --
+
+
+def test_prompt_caching_enabled_by_default():
+    """All Claude models support cache_control; default to on so callers
+    get the cost savings without explicit opt-in. Explicit opt-out via
+    prompt_caching=False remains available for proxies that don't support
+    cache_control."""
+    import asyncio
+
+    from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
+
+    captured = {}
+
+    class _FakeStreamCtx:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *exc): return False
+        def __aiter__(self):
+            async def _gen():
+                return
+                yield
+            return _gen()
+        async def get_final_message(self):
+            return type("M", (), {"stop_reason": "end_turn", "content": []})()
+
+    class _FakeMessages:
+        def stream(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeStreamCtx()
+
+    class _FakeClient:
+        def __init__(self):
+            self.messages = _FakeMessages()
+
+    handle = _AnthropicHandle(
+        client=_FakeClient(),
+        system_prompt="",
+        model="claude-mythos-5",
+        max_tokens=100,
+        tools=[],
+        mcp_server_map={},
+        model_settings={},
+    )
+    backend = AnthropicSDKBackend()
+
+    async def _run():
+        async for _ in backend.run_streamed(handle, "hi", max_turns=1):
+            pass
+
+    asyncio.run(_run())
+    assert captured.get("cache_control") == {"type": "ephemeral"}, (
+        f"expected default cache_control={{type: ephemeral}}, got {captured.get('cache_control')!r}"
+    )
+
+
+def test_prompt_caching_explicit_opt_out():
+    """prompt_caching=False must suppress cache_control entirely (for
+    callers pointed at proxies that don't support it)."""
+    import asyncio
+
+    from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
+
+    captured = {}
+
+    class _FakeStreamCtx:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *exc): return False
+        def __aiter__(self):
+            async def _gen():
+                return
+                yield
+            return _gen()
+        async def get_final_message(self):
+            return type("M", (), {"stop_reason": "end_turn", "content": []})()
+
+    class _FakeMessages:
+        def stream(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeStreamCtx()
+
+    class _FakeClient:
+        def __init__(self):
+            self.messages = _FakeMessages()
+
+    handle = _AnthropicHandle(
+        client=_FakeClient(),
+        system_prompt="",
+        model="claude-mythos-5",
+        max_tokens=100,
+        tools=[],
+        mcp_server_map={},
+        model_settings={"prompt_caching": False},
+    )
+    backend = AnthropicSDKBackend()
+
+    async def _run():
+        async for _ in backend.run_streamed(handle, "hi", max_turns=1):
+            pass
+
+    asyncio.run(_run())
+    assert "cache_control" not in captured, (
+        f"cache_control should be absent when explicitly opted out, got {captured}"
+    )
+
+
+def test_prompt_caching_1h_ttl_passes_ttl_field():
+    """When prompt_caching='1h', cache_control must include the 1h ttl."""
+    import asyncio
+
+    from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
+
+    captured = {}
+
+    class _FakeStreamCtx:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *exc): return False
+        def __aiter__(self):
+            async def _gen():
+                return
+                yield
+            return _gen()
+        async def get_final_message(self):
+            return type("M", (), {"stop_reason": "end_turn", "content": []})()
+
+    class _FakeMessages:
+        def stream(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeStreamCtx()
+
+    class _FakeClient:
+        def __init__(self):
+            self.messages = _FakeMessages()
+
+    handle = _AnthropicHandle(
+        client=_FakeClient(),
+        system_prompt="",
+        model="claude-mythos-5",
+        max_tokens=100,
+        tools=[],
+        mcp_server_map={},
+        model_settings={"prompt_caching": "1h"},
+    )
+    backend = AnthropicSDKBackend()
+
+    async def _run():
+        async for _ in backend.run_streamed(handle, "hi", max_turns=1):
+            pass
+
+    asyncio.run(_run())
+    assert captured.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}, (
+        f"expected cache_control with 1h ttl, got {captured.get('cache_control')!r}"
+    )

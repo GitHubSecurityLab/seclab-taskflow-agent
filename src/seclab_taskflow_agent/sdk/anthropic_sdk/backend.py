@@ -202,6 +202,22 @@ class AnthropicSDKBackend:
                 create_kwargs["thinking"] = {"type": "adaptive"}
                 create_kwargs["output_config"] = {"effort": effort}
 
+        # Automatic prompt caching: place an ephemeral cache breakpoint at
+        # the longest cacheable prefix (tools + system + accumulated
+        # messages). The breakpoint moves forward on each turn, so
+        # multi-turn agent loops get cache reads on every turn after the
+        # first -- typically 50%+ cost reduction on token-heavy audits.
+        # All current Claude models (and the Anthropic-compatible CAPI
+        # proxy) support cache_control. Default on; explicit opt-out for
+        # callers pointed at proxies that don't support it.
+        prompt_caching = handle.model_settings.get("prompt_caching", True)
+        if prompt_caching:
+            ttl = prompt_caching if isinstance(prompt_caching, str) else "5m"
+            cache_block: dict[str, Any] = {"type": "ephemeral"}
+            if ttl != "5m":
+                cache_block["ttl"] = ttl
+            create_kwargs["cache_control"] = cache_block
+
         import anthropic
 
         for turn in range(max_turns):
