@@ -97,6 +97,33 @@ class MCPNamespaceWrap:
             namespaced_tools.append(tool_copy)
         return namespaced_tools
 
+    async def list_tools_unfiltered(self) -> list[Any]:
+        """List tools directly from the MCP session, namespace-prefixed.
+
+        Bypasses any tool_filter configured on the wrapped openai-agents
+        server (which would require ``run_context`` and ``agent`` arguments
+        that aren't available when listing tools outside the openai-agents
+        run loop -- e.g. when handing tools to a different SDK at build
+        time).
+
+        Raises ``RuntimeError`` if the underlying server has no active
+        MCP session yet (caller should ensure the server is connected
+        before calling this).
+        """
+        session = getattr(self._obj, "session", None)
+        if session is None:
+            raise RuntimeError(
+                f"MCPNamespaceWrap({self._obj!r}): underlying server has no "
+                "active MCP session; cannot list tools unfiltered"
+            )
+        result = await session.list_tools()
+        namespaced_tools: list[Any] = []
+        for tool in result.tools:
+            tool_copy = tool.copy() if hasattr(tool, "copy") else tool
+            tool_copy.name = f"{self.namespace}{tool.name}"
+            namespaced_tools.append(tool_copy)
+        return namespaced_tools
+
     def confirm_tool(self, tool_name: str, args: list[Any]) -> bool:
         """Interactively prompt the user for tool-call confirmation.
 

@@ -127,9 +127,10 @@ class AnthropicSDKBackend:
         )
 
         # Collect tools from MCP servers and apply blocked_tools filter.
-        # We filter tools ourselves rather than relying on the openai-agents
-        # SDK's tool_filter, which requires run_context/agent args that
-        # aren't available outside the openai-agents run loop.
+        # We get raw tool lists via list_tools_unfiltered() rather than
+        # list_tools(), which would require run_context/agent args to
+        # invoke the openai-agents tool_filter -- args we don't have
+        # outside the openai-agents run loop.
         all_tools: list[dict[str, Any]] = []
         mcp_server_map: dict[str, Any] = {}
         blocked = set(spec.blocked_tools or [])
@@ -139,27 +140,7 @@ class AnthropicSDKBackend:
             if native_server is None:
                 continue
             try:
-                # Access the underlying MCP session to get the raw tool
-                # list, bypassing the openai-agents tool_filter that
-                # requires run_context/agent we don't have.
-                raw_server = getattr(native_server, "_obj", native_server)
-                session = getattr(raw_server, "session", None)
-                if session is not None:
-                    result = await session.list_tools()
-                    raw_tools = result.tools
-                else:
-                    raw_tools = await native_server.list_tools()
-
-                # Apply namespace prefix (NamespacedMCPServer convention)
-                ns = getattr(native_server, "namespace", "")
-                mcp_tools = []
-                for tool in raw_tools:
-                    if hasattr(tool, "copy"):
-                        tool = tool.copy()
-                    if ns:
-                        tool.name = f"{ns}{tool.name}"
-                    mcp_tools.append(tool)
-
+                mcp_tools = await native_server.list_tools_unfiltered()
                 for tool in mcp_tools:
                     if tool.name not in blocked:
                         mcp_server_map[tool.name] = native_server

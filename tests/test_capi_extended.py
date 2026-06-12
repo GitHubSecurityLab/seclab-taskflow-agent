@@ -111,7 +111,7 @@ class TestGetProvider:
         p = get_provider("https://models.github.ai/inference")
         assert p.name == "github-models"
         assert p.models_catalog == "/catalog/models"
-        assert p.default_model == "openai/gpt-4.1"
+        assert p.default_model == "openai/gpt-5.5"
 
     def test_openai_provider(self):
         p = get_provider("https://api.openai.com/v1")
@@ -129,7 +129,7 @@ class TestGetProvider:
         p = get_provider("http://172.30.0.30:10002")
         assert p.name == "copilot"
         assert p.base_url == "http://172.30.0.30:10002/"
-        assert p.default_model == "gpt-4.1"
+        assert p.default_model == "gpt-5.5"
         assert "Copilot-Integration-Id" in p.extra_headers
 
     def test_awf_proxy_full_url(self, monkeypatch):
