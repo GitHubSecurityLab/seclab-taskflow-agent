@@ -103,13 +103,16 @@ The runner can drive three SDKs behind a common interface:
   Designed for use with CAPI's Anthropic endpoint; auth uses
   `Authorization: Bearer` (not `x-api-key`).
 
-Selection precedence:
+Selection precedence (highest to lowest):
 
-1. Per-model `backend:` in `model_settings` (allows mixed backends in a
-   single taskflow).
-2. `backend:` field in the model config document (global default).
-3. `SECLAB_TASKFLOW_BACKEND` environment variable.
-4. `openai_agents`.
+1. Per-task `backend:` in the task's own `model_settings` block (overrides
+   the model-level value for that one task; see `_resolve_task_model()`).
+2. Per-model `backend:` in the model config's `model_settings` (allows
+   mixed backends in a single taskflow).
+3. `backend:` field at the top level of the model config document
+   (global default).
+4. `SECLAB_TASKFLOW_BACKEND` environment variable.
+5. `openai_agents`.
 
 ```yaml
 seclab-taskflow-agent:

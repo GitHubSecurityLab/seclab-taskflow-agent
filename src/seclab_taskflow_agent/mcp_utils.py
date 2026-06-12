@@ -106,6 +106,12 @@ class MCPNamespaceWrap:
         run loop -- e.g. when handing tools to a different SDK at build
         time).
 
+        Prefixing is idempotent: if a tool's name already starts with this
+        wrapper's namespace (e.g. because the underlying session returned a
+        previously-namespaced object), the existing prefix is stripped
+        before re-applying so calling this method multiple times never
+        yields ``<ns><ns>name``.
+
         Raises ``RuntimeError`` if the underlying server has no active
         MCP session yet (caller should ensure the server is connected
         before calling this).
@@ -120,7 +126,9 @@ class MCPNamespaceWrap:
         namespaced_tools: list[Any] = []
         for tool in result.tools:
             tool_copy = tool.copy() if hasattr(tool, "copy") else tool
-            tool_copy.name = f"{self.namespace}{tool.name}"
+            # Idempotent: strip existing prefix before re-applying
+            base_name = tool_copy.name.removeprefix(self.namespace)
+            tool_copy.name = f"{self.namespace}{base_name}"
             namespaced_tools.append(tool_copy)
         return namespaced_tools
 

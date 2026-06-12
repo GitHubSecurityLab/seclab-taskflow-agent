@@ -111,6 +111,23 @@ def test_list_tools_unfiltered_does_not_share_state_with_caller():
     assert original.name == "read_file"
 
 
+def test_list_tools_unfiltered_idempotent_on_prefixed_input():
+    """If the session returns a tool whose name is already namespace-prefixed
+    (e.g. because of a cached/reused tool object), the prefix must NOT be
+    applied a second time. Required for safe repeated/reentrant calls."""
+    ns = compress_name("RepoContext")
+    pre_prefixed = _FakeTool(f"{ns}read_file", "Read a file")
+    session = MagicMock()
+    session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[pre_prefixed]))
+    wrapper = _make_wrapper("RepoContext", session=session)
+
+    result = asyncio.run(wrapper.list_tools_unfiltered())
+
+    # Result must have exactly one prefix, not two
+    assert result[0].name == f"{ns}read_file"
+    assert not result[0].name.startswith(f"{ns}{ns}")
+
+
 # -- list_tools() (regression) --
 
 

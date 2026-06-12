@@ -550,5 +550,10 @@ passed to the underlying model provider:
 | `endpoint` | API base URL for this model | The global `AI_API_ENDPOINT` env var |
 | `token` | Name of an environment variable containing the API key | Uses `AI_API_TOKEN` / `COPILOT_TOKEN` |
 
-All other keys (e.g. `temperature`, `top_p`, `reasoning`) are passed through as
-model parameters to the selected SDK backend.
+All other keys (e.g. `temperature`, `top_p`, `reasoning`) are forwarded to
+the selected SDK backend. Which keys are actually honored depends on the
+backend: `openai_agents` accepts the standard OpenAI parameter set;
+`anthropic_sdk` forwards a curated subset (currently `temperature`,
+`top_p`, `reasoning`, `max_tokens`, `stream_thinking`); `copilot_sdk`
+consumes only the keys its SDK exposes (e.g. `reasoning_effort`) and
+silently ignores the rest. Consult the backend-specific docs if in doubt.
