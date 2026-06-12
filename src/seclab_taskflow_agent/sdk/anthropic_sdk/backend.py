@@ -105,10 +105,7 @@ class AnthropicSDKBackend:
         from ...capi import get_AI_endpoint, get_AI_token, get_provider
 
         # Resolve token: per-model env var override, then standard token chain
-        if spec.token_env:
-            token = os.getenv(spec.token_env, "")
-        else:
-            token = ""
+        token = os.getenv(spec.token_env, "") if spec.token_env else ""
         if not token:
             token = get_AI_token()
 
