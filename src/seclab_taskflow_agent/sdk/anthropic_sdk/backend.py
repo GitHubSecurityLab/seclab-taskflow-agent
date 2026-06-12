@@ -123,7 +123,7 @@ class AnthropicSDKBackend:
         token = _resolve_token(spec.token_env)
         endpoint = spec.endpoint or _resolve_endpoint()
 
-        from ..capi import is_capi_endpoint
+        from ...capi import is_capi_endpoint
 
         # CAPI expects Authorization: Bearer, not x-api-key. Use a
         # placeholder api_key so the SDK doesn't send the real token
