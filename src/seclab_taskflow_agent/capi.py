@@ -29,7 +29,6 @@ __all__ = [
     "get_AI_endpoint",
     "get_AI_token",
     "get_provider",
-    "is_capi_endpoint",
     "list_capi_models",
     "list_tool_call_models",
     "supports_tool_calls",
@@ -51,6 +50,7 @@ class APIProvider:
     models_catalog: str = "/models"
     default_model: str = "gpt-4.1"
     extra_headers: Mapping[str, str] = field(default_factory=dict)
+    bearer_auth: bool = True  # Use Authorization: Bearer (not x-api-key)
 
     def __post_init__(self) -> None:
         # Ensure base_url ends with / so httpx URL.join() preserves the path
@@ -143,14 +143,6 @@ _PROVIDERS: dict[str, APIProvider] = {
 
 _DEFAULT_PROVIDER = "api.githubcopilot.com"
 
-# Hostnames that use CAPI-style auth (Authorization: Bearer, not x-api-key).
-_CAPI_HOSTS = frozenset(_PROVIDERS.keys())
-
-
-def is_capi_endpoint(endpoint: str) -> bool:
-    """Return True if *endpoint* is a GitHub CAPI proxy (needs Bearer auth)."""
-    return urlparse(endpoint).hostname in _CAPI_HOSTS
-
 def get_provider(endpoint: str | None = None) -> APIProvider:
     """Return the ``APIProvider`` for the given (or configured) endpoint URL.
 
@@ -181,8 +173,9 @@ def get_provider(endpoint: str | None = None) -> APIProvider:
         if upstream:
             return dataclasses.replace(upstream, base_url=url)
 
-    # Unknown endpoint — return a generic provider with the given base URL
-    return APIProvider(name="custom", base_url=url, default_model="please-set-default-model-via-env")
+    # Unknown endpoint — return a generic provider using native SDK auth.
+    return APIProvider(name="custom", base_url=url, bearer_auth=False,
+                       default_model="please-set-default-model-via-env")
 
 
 # ---------------------------------------------------------------------------

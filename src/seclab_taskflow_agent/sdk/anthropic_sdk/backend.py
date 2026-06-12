@@ -7,10 +7,11 @@ Drives the Anthropic Messages API (``/v1/messages``) via the official
 ``anthropic`` Python SDK. Supports streaming, tool calling via MCP
 servers, and extended thinking.
 
-Auth note: The Anthropic SDK sends ``x-api-key`` by default, but CAPI
-expects ``Authorization: Bearer``. We pass the bearer header via
-``default_headers`` and set ``api_key`` to a placeholder so the SDK
-doesn't complain about a missing key.
+Auth note: The Anthropic SDK sends ``x-api-key`` by default, but
+providers that use Bearer auth (see ``APIProvider.bearer_auth``)
+need ``Authorization: Bearer`` instead.  We pass the bearer header
+via ``default_headers`` and set ``api_key`` to a placeholder so the
+SDK doesn't send the real token via x-api-key.
 """
 
 from __future__ import annotations
@@ -36,25 +37,6 @@ from ..errors import (
 logger = logging.getLogger(__name__)
 
 _VALID_REASONING = ("low", "medium", "high", "max")
-
-
-def _resolve_token(token_env: str | None) -> str:
-    """Resolve the API token from env var name or default AI_API_TOKEN."""
-    if token_env:
-        val = os.getenv(token_env)
-        if val:
-            return val
-    val = os.getenv("AI_API_TOKEN")
-    if val:
-        return val
-    raise BackendBadRequestError(
-        "anthropic_sdk: no API token found (set AI_API_TOKEN or per-model token env)"
-    )
-
-
-def _resolve_endpoint() -> str:
-    """Resolve the API base URL."""
-    return os.getenv("AI_API_ENDPOINT", "https://api.githubcopilot.com")
 
 
 def _mcp_tools_to_anthropic(tools: list[Any]) -> list[dict[str, Any]]:
@@ -120,25 +102,29 @@ class AnthropicSDKBackend:
 
         import anthropic
 
-        token = _resolve_token(spec.token_env)
-        endpoint = spec.endpoint or _resolve_endpoint()
+        from ...capi import get_AI_endpoint, get_AI_token, get_provider
 
-        from ...capi import is_capi_endpoint
+        # Resolve token: per-model env var override, then standard token chain
+        if spec.token_env:
+            token = os.getenv(spec.token_env, "")
+        else:
+            token = ""
+        if not token:
+            token = get_AI_token()
 
-        # CAPI expects Authorization: Bearer, not x-api-key. Use a
-        # placeholder api_key so the SDK doesn't send the real token
-        # via x-api-key as well. For direct Anthropic endpoints, pass
-        # the real token as api_key (the SDK's native auth).
-        is_capi = is_capi_endpoint(endpoint)
-        headers: dict[str, str] = {}
-        if is_capi:
+        endpoint = spec.endpoint or get_AI_endpoint()
+        provider = get_provider(endpoint)
+
+        # Providers with bearer_auth=True need Authorization: Bearer instead
+        # of the Anthropic SDK's native x-api-key header. Use a placeholder
+        # api_key so the SDK doesn't also send the real token via x-api-key.
+        # Endpoints not in the provider registry default to native SDK auth.
+        headers: dict[str, str] = dict(provider.extra_headers)
+        if provider.bearer_auth:
             headers["Authorization"] = f"Bearer {token}"
-            headers["Copilot-Integration-Id"] = os.getenv(
-                "COPILOT_INTEGRATION_ID", "vscode-chat"
-            )
 
         client = anthropic.AsyncAnthropic(
-            api_key="placeholder" if is_capi else token,
+            api_key="placeholder" if provider.bearer_auth else token,
             base_url=endpoint,
             default_headers=headers or None,
         )

@@ -13,7 +13,6 @@ from seclab_taskflow_agent.sdk.anthropic_sdk.backend import (
     AnthropicSDKBackend,
     _mcp_tools_to_anthropic,
     _call_tool_result_to_text,
-    _resolve_token,
     _VALID_REASONING,
 )
 from seclab_taskflow_agent.sdk.errors import (
@@ -152,25 +151,37 @@ def test_call_tool_result_to_text_empty():
     assert isinstance(text, str)
 
 
-# -- _resolve_token() --
+# -- bearer_auth via provider registry --
 
 
-def test_resolve_token_from_env(monkeypatch):
-    monkeypatch.setenv("MY_TOKEN", "secret123")
-    assert _resolve_token("MY_TOKEN") == "secret123"
+def test_known_provider_uses_bearer_auth():
+    """Known providers (CAPI, GitHub Models) should have bearer_auth=True."""
+    from seclab_taskflow_agent.capi import get_provider
+
+    provider = get_provider("https://api.githubcopilot.com")
+    assert provider.bearer_auth is True
+
+    provider = get_provider("https://models.github.ai/inference")
+    assert provider.bearer_auth is True
 
 
-def test_resolve_token_fallback_to_ai_api_token(monkeypatch):
-    monkeypatch.setenv("AI_API_TOKEN", "fallback_token")
-    monkeypatch.delenv("MISSING_VAR", raising=False)
-    assert _resolve_token("MISSING_VAR") == "fallback_token"
+def test_unknown_endpoint_uses_native_auth():
+    """Unknown endpoints should default to native SDK auth (bearer_auth=False)."""
+    from seclab_taskflow_agent.capi import get_provider
+
+    provider = get_provider("https://api.anthropic.com")
+    assert provider.bearer_auth is False
+    assert provider.name == "custom"
 
 
-def test_resolve_token_raises_when_missing(monkeypatch):
-    monkeypatch.delenv("AI_API_TOKEN", raising=False)
-    monkeypatch.delenv("MISSING_VAR", raising=False)
-    with pytest.raises(BackendBadRequestError, match="no API token"):
-        _resolve_token("MISSING_VAR")
+def test_awf_proxy_inherits_upstream_bearer_auth(monkeypatch):
+    """AWF proxy should inherit bearer_auth from the upstream provider."""
+    from seclab_taskflow_agent.capi import get_provider
+
+    monkeypatch.setenv("AWF_COPILOT_PROXY", "api.githubcopilot.com")
+    provider = get_provider("http://localhost:8080")
+    assert provider.bearer_auth is True
+    assert provider.base_url == "http://localhost:8080/"
 
 
 # -- reasoning validation --
