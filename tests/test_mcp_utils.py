@@ -22,7 +22,7 @@ class _FakeTool:
         self.description = description
         self.inputSchema = input_schema or {}
 
-    def copy(self) -> "_FakeTool":
+    def copy(self) -> _FakeTool:
         return _FakeTool(self.name, self.description, dict(self.inputSchema))
 
 
@@ -93,7 +93,7 @@ def test_list_tools_unfiltered_raises_when_session_missing():
     """Should raise RuntimeError if the underlying server has no session yet."""
     wrapper = _make_wrapper("RepoContext", session=None)
 
-    with pytest.raises(RuntimeError, match="no.*active MCP session"):
+    with pytest.raises(RuntimeError, match=r"no.*active MCP session"):
         asyncio.run(wrapper.list_tools_unfiltered())
 
 
