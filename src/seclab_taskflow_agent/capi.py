@@ -48,7 +48,7 @@ class APIProvider:
     name: str
     base_url: str
     models_catalog: str = "/models"
-    default_model: str = "gpt-5.5"
+    default_model: str = "gpt-4.1"
     extra_headers: Mapping[str, str] = field(default_factory=dict)
     bearer_auth: bool = True  # Use Authorization: Bearer (not x-api-key)
 
@@ -124,20 +124,20 @@ _PROVIDERS: dict[str, APIProvider] = {
     "api.githubcopilot.com": _CopilotProvider(
         name="copilot",
         base_url="https://api.githubcopilot.com",
-        default_model="gpt-5.5",
+        default_model="gpt-4.1",
         extra_headers={"Copilot-Integration-Id": COPILOT_INTEGRATION_ID},
     ),
     "models.github.ai": _GitHubModelsProvider(
         name="github-models",
         base_url="https://models.github.ai/inference",
         models_catalog="/catalog/models",
-        default_model="openai/gpt-5.5",
+        default_model="openai/gpt-4.1",
     ),
     "api.openai.com": _OpenAIProvider(
         name="openai",
         base_url="https://api.openai.com/v1",
         models_catalog="/v1/models",
-        default_model="gpt-5.5",
+        default_model="gpt-4.1",
     ),
 }
 
