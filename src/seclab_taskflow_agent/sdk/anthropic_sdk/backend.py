@@ -104,10 +104,22 @@ class AnthropicSDKBackend:
 
         from ...capi import get_AI_endpoint, get_AI_token, get_provider
 
-        # Resolve token: per-model env var override, then standard token chain
+        # Resolve token: per-model env var override, then standard token chain.
+        # Wrap RuntimeError from get_AI_token (env var not set) so the runner
+        # surfaces it as a request error rather than an internal exception.
         token = os.getenv(spec.token_env, "") if spec.token_env else ""
         if not token:
-            token = get_AI_token()
+            try:
+                token = get_AI_token()
+            except RuntimeError as exc:
+                raise BackendBadRequestError(
+                    f"anthropic_sdk: no API token available ({exc})"
+                ) from exc
+        if not token:
+            raise BackendBadRequestError(
+                "anthropic_sdk: no API token available "
+                "(checked spec.token_env then standard token chain)"
+            )
 
         endpoint = spec.endpoint or get_AI_endpoint()
         provider = get_provider(endpoint)
@@ -257,8 +269,16 @@ class AnthropicSDKBackend:
                 raise BackendRateLimitError(str(exc)) from exc
             except anthropic.APITimeoutError as exc:
                 raise BackendTimeoutError(str(exc)) from exc
-            except anthropic.BadRequestError as exc:
-                raise BackendBadRequestError(str(exc)) from exc
+            except anthropic.APIStatusError as exc:
+                # Map all 4xx (auth, permission, not_found, conflict,
+                # unprocessable, bad_request) to BackendBadRequestError so
+                # the runner surfaces them as request errors rather than
+                # internal exceptions. 5xx and unclassified errors fall
+                # through to BackendUnexpectedError.
+                status = getattr(exc, "status_code", None)
+                if isinstance(status, int) and 400 <= status < 500:
+                    raise BackendBadRequestError(str(exc)) from exc
+                raise BackendUnexpectedError(str(exc)) from exc
             except anthropic.APIError as exc:
                 raise BackendUnexpectedError(str(exc)) from exc
 

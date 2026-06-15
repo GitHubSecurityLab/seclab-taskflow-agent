@@ -31,6 +31,48 @@ def _spec(**overrides) -> AgentSpec:
     return AgentSpec(**base)
 
 
+def _make_fake_client(captured: dict, *, stop_reason: str = "end_turn", content: list | None = None):
+    """Build a minimal fake Anthropic client that records messages.stream() kwargs.
+
+    The returned client exposes ``client.messages.stream(**kwargs)``; ``kwargs`` is
+    written into *captured* so tests can assert on what the backend would have sent
+    to the real SDK.  The stream yields nothing and ``get_final_message()`` returns
+    a stub with the requested ``stop_reason``/``content``.
+    """
+    final_content = content if content is not None else []
+
+    class _EmptyAsyncIter:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _FakeStreamCtx:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def __aiter__(self):
+            return _EmptyAsyncIter()
+
+        async def get_final_message(self):
+            return type("M", (), {"stop_reason": stop_reason, "content": final_content})()
+
+    class _FakeMessages:
+        def stream(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeStreamCtx()
+
+    class _FakeClient:
+        def __init__(self):
+            self.messages = _FakeMessages()
+
+    return _FakeClient()
+
+
 # -- Backend registration --
 
 
@@ -241,30 +283,9 @@ def test_prompt_caching_enabled_by_default():
 
     from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
 
-    captured = {}
-
-    class _FakeStreamCtx:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *exc): return False
-        def __aiter__(self):
-            async def _gen():
-                return
-                yield
-            return _gen()
-        async def get_final_message(self):
-            return type("M", (), {"stop_reason": "end_turn", "content": []})()
-
-    class _FakeMessages:
-        def stream(self, **kwargs):
-            captured.update(kwargs)
-            return _FakeStreamCtx()
-
-    class _FakeClient:
-        def __init__(self):
-            self.messages = _FakeMessages()
-
+    captured: dict = {}
     handle = _AnthropicHandle(
-        client=_FakeClient(),
+        client=_make_fake_client(captured),
         system_prompt="",
         model="claude-mythos-5",
         max_tokens=100,
@@ -291,30 +312,9 @@ def test_prompt_caching_explicit_opt_out():
 
     from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
 
-    captured = {}
-
-    class _FakeStreamCtx:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *exc): return False
-        def __aiter__(self):
-            async def _gen():
-                return
-                yield
-            return _gen()
-        async def get_final_message(self):
-            return type("M", (), {"stop_reason": "end_turn", "content": []})()
-
-    class _FakeMessages:
-        def stream(self, **kwargs):
-            captured.update(kwargs)
-            return _FakeStreamCtx()
-
-    class _FakeClient:
-        def __init__(self):
-            self.messages = _FakeMessages()
-
+    captured: dict = {}
     handle = _AnthropicHandle(
-        client=_FakeClient(),
+        client=_make_fake_client(captured),
         system_prompt="",
         model="claude-mythos-5",
         max_tokens=100,
@@ -340,30 +340,9 @@ def test_prompt_caching_1h_ttl_passes_ttl_field():
 
     from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
 
-    captured = {}
-
-    class _FakeStreamCtx:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *exc): return False
-        def __aiter__(self):
-            async def _gen():
-                return
-                yield
-            return _gen()
-        async def get_final_message(self):
-            return type("M", (), {"stop_reason": "end_turn", "content": []})()
-
-    class _FakeMessages:
-        def stream(self, **kwargs):
-            captured.update(kwargs)
-            return _FakeStreamCtx()
-
-    class _FakeClient:
-        def __init__(self):
-            self.messages = _FakeMessages()
-
+    captured: dict = {}
     handle = _AnthropicHandle(
-        client=_FakeClient(),
+        client=_make_fake_client(captured),
         system_prompt="",
         model="claude-mythos-5",
         max_tokens=100,
@@ -490,3 +469,138 @@ def test_blocked_tools_also_matches_already_namespaced_name(monkeypatch):
     assert handle.tools == [], (
         f"blocked namespaced name should filter out the tool; got: {handle.tools}"
     )
+
+
+# -- token validation --
+
+
+def test_build_raises_bad_request_when_no_token_available(monkeypatch):
+    """build() must fail loudly when no API token can be resolved.
+
+    Otherwise the Anthropic client gets created with an empty 'Bearer '
+    header and the failure surfaces later as an opaque 401 mid-stream
+    instead of a clear BackendBadRequestError at build time.
+    """
+    import asyncio
+
+    # Clear every token-source env var the standard chain consults
+    for var in ("AI_API_TOKEN", "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+
+    spec = AgentSpec(
+        name="t",
+        instructions="",
+        model="claude-mythos-preview",
+        endpoint="https://api.githubcopilot.com",
+    )
+    backend = AnthropicSDKBackend()
+    with pytest.raises(BackendBadRequestError, match="no API token"):
+        asyncio.run(backend.build(spec))
+
+
+# -- exception mapping (4xx -> BackendBadRequestError) --
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 409, 422])
+def test_4xx_api_status_errors_map_to_bad_request(monkeypatch, status_code):
+    """Any 4xx APIStatusError must surface as BackendBadRequestError so the
+    runner logs it as a request error rather than an internal exception.
+    Previously only BadRequestError (400) was mapped, leaving auth/permission/
+    not-found errors (401/403/404) to surface as BackendUnexpectedError."""
+    import asyncio
+    import anthropic
+    import httpx
+
+    from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
+
+    response = httpx.Response(
+        status_code=status_code,
+        request=httpx.Request("POST", "https://test.example/v1/messages"),
+    )
+
+    class _RaisingStreamCtx:
+        async def __aenter__(self):
+            raise anthropic.APIStatusError(
+                f"http {status_code}", response=response, body=None
+            )
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _FakeMessages:
+        def stream(self, **kwargs):  # noqa: ARG002
+            return _RaisingStreamCtx()
+
+    class _FakeClient:
+        def __init__(self):
+            self.messages = _FakeMessages()
+
+    handle = _AnthropicHandle(
+        client=_FakeClient(),
+        system_prompt="",
+        model="claude-mythos-5",
+        max_tokens=100,
+        tools=[],
+        mcp_server_map={},
+        model_settings={"prompt_caching": False},
+    )
+    backend = AnthropicSDKBackend()
+
+    async def _run():
+        async for _ in backend.run_streamed(handle, "hi", max_turns=1):
+            pass
+
+    with pytest.raises(BackendBadRequestError):
+        asyncio.run(_run())
+
+
+def test_5xx_api_status_errors_map_to_unexpected(monkeypatch):
+    """5xx APIStatusError must still surface as BackendUnexpectedError (not
+    BackendBadRequestError); the request itself was well-formed."""
+    import asyncio
+    import anthropic
+    import httpx
+
+    from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
+    from seclab_taskflow_agent.sdk.errors import BackendUnexpectedError
+
+    response = httpx.Response(
+        status_code=503,
+        request=httpx.Request("POST", "https://test.example/v1/messages"),
+    )
+
+    class _RaisingStreamCtx:
+        async def __aenter__(self):
+            raise anthropic.InternalServerError(
+                "service unavailable", response=response, body=None
+            )
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _FakeMessages:
+        def stream(self, **kwargs):  # noqa: ARG002
+            return _RaisingStreamCtx()
+
+    class _FakeClient:
+        def __init__(self):
+            self.messages = _FakeMessages()
+
+    handle = _AnthropicHandle(
+        client=_FakeClient(),
+        system_prompt="",
+        model="claude-mythos-5",
+        max_tokens=100,
+        tools=[],
+        mcp_server_map={},
+        model_settings={"prompt_caching": False},
+    )
+    backend = AnthropicSDKBackend()
+
+    async def _run():
+        async for _ in backend.run_streamed(handle, "hi", max_turns=1):
+            pass
+
+    with pytest.raises(BackendUnexpectedError):
+        asyncio.run(_run())
