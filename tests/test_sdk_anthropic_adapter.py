@@ -193,6 +193,25 @@ def test_call_tool_result_to_text_empty():
     assert isinstance(text, str)
 
 
+def test_call_tool_result_to_text_preserves_empty_string():
+    """A tool returning TextContent(text='') is reporting an explicit
+    empty result. The helper must return '' verbatim, not fall back to
+    str(result) (which is a noisy repr of the result object).
+
+    Regression for the truthy-check bug: ``if text:`` was treating ''
+    the same as None and dropping it, causing the empty content list
+    branch to fire and emit ``str(result)`` to the model.
+    """
+    result = type("R", (), {"content": [_FakeContent("")]})()
+    assert _call_tool_result_to_text(result) == ""
+
+
+def test_call_tool_result_to_text_preserves_empty_among_nonempty():
+    """Empty TextContent should join with neighbors as ''."""
+    result = type("R", (), {"content": [_FakeContent("a"), _FakeContent(""), _FakeContent("b")]})()
+    assert _call_tool_result_to_text(result) == "a\n\nb"
+
+
 # -- bearer_auth via provider registry --
 
 
@@ -480,13 +499,18 @@ def test_build_raises_bad_request_when_no_token_available(monkeypatch):
     Otherwise the Anthropic client gets created with an empty 'Bearer '
     header and the failure surfaces later as an opaque 401 mid-stream
     instead of a clear BackendBadRequestError at build time.
+
+    Clears every variable consulted by ``capi.get_AI_token``
+    (``AI_API_TOKEN`` then ``COPILOT_TOKEN``) to keep the test
+    deterministic regardless of the runner's ambient environment.
     """
     import asyncio
 
-    # Clear every token-source env var the standard chain consults
-    for var in ("AI_API_TOKEN", "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY",
-                "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"):
-        monkeypatch.delenv(var, raising=False)
+    # Must clear *every* env var the token chain consults; missing
+    # COPILOT_TOKEN here would make the test flaky on runners that
+    # happen to have it set (e.g. CI machines authed to copilot).
+    monkeypatch.delenv("AI_API_TOKEN", raising=False)
+    monkeypatch.delenv("COPILOT_TOKEN", raising=False)
 
     spec = AgentSpec(
         name="t",

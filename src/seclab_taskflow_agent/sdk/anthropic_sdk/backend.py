@@ -54,12 +54,18 @@ def _mcp_tools_to_anthropic(tools: list[Any]) -> list[dict[str, Any]]:
 
 
 def _call_tool_result_to_text(result: Any) -> str:
-    """Extract text from an MCP CallToolResult."""
+    """Extract text from an MCP CallToolResult.
+
+    Preserves empty strings: a tool that returns ``TextContent(text="")``
+    is returning an explicit empty result, not "no content".  Only fall
+    back to ``str(result)`` (a noisy repr) when there are genuinely no
+    text-bearing content blocks at all.
+    """
     content = getattr(result, "content", [])
     parts = []
     for c in content:
         text = getattr(c, "text", None)
-        if text:
+        if text is not None:
             parts.append(text)
     return "\n".join(parts) if parts else str(result)
 
