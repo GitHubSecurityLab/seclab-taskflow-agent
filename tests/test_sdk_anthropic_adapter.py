@@ -381,3 +381,112 @@ def test_prompt_caching_1h_ttl_passes_ttl_field():
     assert captured.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}, (
         f"expected cache_control with 1h ttl, got {captured.get('cache_control')!r}"
     )
+
+
+# -- blocked_tools filtering --
+
+
+def test_blocked_tools_matches_raw_name_against_namespaced_tool(monkeypatch):
+    """Regression: taskflow YAML blocked_tools uses raw (un-namespaced)
+    names like 'read_file', but list_tools_unfiltered() returns
+    namespace-prefixed names like '{hash}read_file'. The filter must
+    match the raw name against the un-prefixed portion of the
+    namespaced tool, otherwise blocking is silently bypassed.
+
+    See PR #265 review thread and openai_agents/copilot_sdk for
+    how blocked_tools are consumed elsewhere (both use raw names).
+    """
+    monkeypatch.setenv("AI_API_TOKEN", "test-token")
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from seclab_taskflow_agent.mcp_utils import MCPNamespaceWrap, compress_name
+    from seclab_taskflow_agent.sdk.base import MCPServerSpec
+
+    class _FakeTool:
+        def __init__(self, name):
+            self.name = name
+            self.description = ""
+            self.inputSchema = {}
+
+        def copy(self):
+            t = _FakeTool(self.name)
+            return t
+
+    # Build a wrapper whose session.list_tools returns two raw tools.
+    # list_tools_unfiltered() will return them with namespace prefix.
+    obj = MagicMock()
+    obj.name = "RepoContext"
+    ns = compress_name("RepoContext")
+    obj.session = MagicMock()
+    obj.session.list_tools = AsyncMock(
+        return_value=type("R", (), {"tools": [_FakeTool("read_file"), _FakeTool("safe_helper")]})()
+    )
+    wrap = MCPNamespaceWrap(confirms=[], obj=obj)
+
+    spec = AgentSpec(
+        name="t",
+        instructions="",
+        model="claude-mythos-preview",
+        mcp_servers=[MCPServerSpec(name="rc", kind="stdio", params={"_native": wrap})],
+        blocked_tools=["read_file"],  # raw name from YAML
+    )
+    backend = AnthropicSDKBackend()
+    handle = asyncio.run(backend.build(spec))
+
+    # The blocked tool must be absent from both the tool list AND the
+    # server map keys (which use the namespaced form).
+    tool_names = [t["name"] for t in handle.tools]
+    assert f"{ns}read_file" not in tool_names, (
+        f"blocked raw name 'read_file' should have filtered out '{ns}read_file'; "
+        f"got tools: {tool_names}"
+    )
+    assert f"{ns}safe_helper" in tool_names, (
+        f"non-blocked tool 'safe_helper' should still be present; got: {tool_names}"
+    )
+    assert f"{ns}read_file" not in handle.mcp_server_map
+    assert f"{ns}safe_helper" in handle.mcp_server_map
+
+
+def test_blocked_tools_also_matches_already_namespaced_name(monkeypatch):
+    """Backwards-compat: if a caller already passes the namespaced name
+    in blocked_tools (e.g. they computed it externally), it should still
+    match. The filter checks both forms."""
+    monkeypatch.setenv("AI_API_TOKEN", "test-token")
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from seclab_taskflow_agent.mcp_utils import MCPNamespaceWrap, compress_name
+    from seclab_taskflow_agent.sdk.base import MCPServerSpec
+
+    class _FakeTool:
+        def __init__(self, name):
+            self.name = name
+            self.description = ""
+            self.inputSchema = {}
+
+        def copy(self):
+            return _FakeTool(self.name)
+
+    obj = MagicMock()
+    obj.name = "RepoContext"
+    ns = compress_name("RepoContext")
+    obj.session = MagicMock()
+    obj.session.list_tools = AsyncMock(
+        return_value=type("R", (), {"tools": [_FakeTool("read_file")]})()
+    )
+    wrap = MCPNamespaceWrap(confirms=[], obj=obj)
+
+    spec = AgentSpec(
+        name="t",
+        instructions="",
+        model="claude-mythos-preview",
+        mcp_servers=[MCPServerSpec(name="rc", kind="stdio", params={"_native": wrap})],
+        blocked_tools=[f"{ns}read_file"],  # already namespaced
+    )
+    backend = AnthropicSDKBackend()
+    handle = asyncio.run(backend.build(spec))
+
+    assert handle.tools == [], (
+        f"blocked namespaced name should filter out the tool; got: {handle.tools}"
+    )

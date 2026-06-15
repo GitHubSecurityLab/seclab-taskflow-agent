@@ -131,9 +131,23 @@ class AnthropicSDKBackend:
         # list_tools(), which would require run_context/agent args to
         # invoke the openai-agents tool_filter -- args we don't have
         # outside the openai-agents run loop.
+        #
+        # blocked_tools in taskflow YAML are raw (un-namespaced) names,
+        # consistent with how openai_agents and copilot_sdk consume them.
+        # list_tools_unfiltered() returns namespace-prefixed names (the
+        # MCP server wrapper applies the prefix). Match against both
+        # forms so blocking works regardless of which name the taskflow
+        # author used; key mcp_server_map by the namespaced name because
+        # that's what Anthropic will send back in tool_use blocks.
         all_tools: list[dict[str, Any]] = []
         mcp_server_map: dict[str, Any] = {}
         blocked = set(spec.blocked_tools or [])
+
+        def _is_blocked(tool: Any, namespace: str) -> bool:
+            name = tool.name
+            if name in blocked:
+                return True
+            return name.startswith(namespace) and name[len(namespace):] in blocked
 
         for mcp_spec in spec.mcp_servers:
             native_server = mcp_spec.params.get("_native")
@@ -141,13 +155,11 @@ class AnthropicSDKBackend:
                 continue
             try:
                 mcp_tools = await native_server.list_tools_unfiltered()
-                for tool in mcp_tools:
-                    if tool.name not in blocked:
-                        mcp_server_map[tool.name] = native_server
-                anthropic_tools = _mcp_tools_to_anthropic(
-                    [t for t in mcp_tools if t.name not in blocked]
-                )
-                all_tools.extend(anthropic_tools)
+                namespace = getattr(native_server, "namespace", "")
+                kept = [t for t in mcp_tools if not _is_blocked(t, namespace)]
+                for tool in kept:
+                    mcp_server_map[tool.name] = native_server
+                all_tools.extend(_mcp_tools_to_anthropic(kept))
             except Exception:
                 logger.exception("Failed to list tools from MCP server %s", mcp_spec.name)
 

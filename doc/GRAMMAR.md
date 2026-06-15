@@ -550,10 +550,4 @@ passed to the underlying model provider:
 | `endpoint` | API base URL for this model | The global `AI_API_ENDPOINT` env var |
 | `token` | Name of an environment variable containing the API key | Uses `AI_API_TOKEN` / `COPILOT_TOKEN` |
 
-All other keys (e.g. `temperature`, `top_p`, `reasoning`) are forwarded to
-the selected SDK backend. Which keys are actually honored depends on the
-backend: `openai_agents` accepts the standard OpenAI parameter set;
-`anthropic_sdk` forwards a curated subset (currently `temperature`,
-`top_p`, `reasoning`, `max_tokens`, `stream_thinking`); `copilot_sdk`
-consumes only the keys its SDK exposes (e.g. `reasoning_effort`) and
-silently ignores the rest. Consult the backend-specific docs if in doubt.
+All other keys (e.g. `temperature`, `top_p`, `reasoning`) are forwarded to the selected SDK backend. Each backend decides what to do with each key: `openai_agents` accepts the standard OpenAI parameter set; `anthropic_sdk` forwards a curated subset (currently `temperature`, `top_p`, `reasoning`, `max_tokens`, `stream_thinking`, `prompt_caching`) and silently ignores keys outside that set; `copilot_sdk` consumes the keys its SDK exposes (e.g. `reasoning_effort`) and **rejects** unsupported keys at validate time with `BackendCapabilityError` (currently `temperature` and `parallel_tool_calls`) rather than silently dropping them. Consult the backend-specific docs if in doubt.
