@@ -3,9 +3,9 @@
 
 """Backend factory for the agent runner.
 
-Two backends are supported: ``openai_agents`` (default) and
-``copilot_sdk`` (optional, requires ``pip install
-seclab-taskflow-agent[copilot]``).
+Three backends are supported: ``openai_agents`` (default), ``copilot_sdk``,
+and ``anthropic_sdk``.  All three are always available because per-task
+backend selection means any SDK may be needed at runtime.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from .base import (
 )
 
 _ENV_VAR = "SECLAB_TASKFLOW_BACKEND"
-_KNOWN = ("openai_agents", "copilot_sdk")
+_KNOWN = ("openai_agents", "copilot_sdk", "anthropic_sdk")
 _BACKENDS: dict[str, AgentBackend] = {}
 
 
@@ -46,10 +46,16 @@ def get_backend(name: str) -> AgentBackend:
             from .openai_agents.backend import OpenAIAgentsBackend
 
             _BACKENDS[name] = OpenAIAgentsBackend()
-        else:
+        elif name == "copilot_sdk":
             from .copilot_sdk.backend import CopilotSDKBackend
 
             _BACKENDS[name] = CopilotSDKBackend()
+        elif name == "anthropic_sdk":
+            from .anthropic_sdk.backend import AnthropicSDKBackend
+
+            _BACKENDS[name] = AnthropicSDKBackend()
+        else:
+            raise ValueError(f"No backend implementation for {name!r}")
     return _BACKENDS[name]
 
 
@@ -64,8 +70,9 @@ def resolve_backend_name(
     ``SECLAB_TASKFLOW_BACKEND`` env var > ``openai_agents``.
 
     Backend selection is always deterministic — there is no auto-detection
-    based on endpoint URL.  Use ``backend: copilot_sdk`` in model config
-    or set ``SECLAB_TASKFLOW_BACKEND=copilot_sdk`` to opt in.
+    based on endpoint URL.  Use ``backend: copilot_sdk`` or ``backend:
+    anthropic_sdk`` in model config (or set
+    ``SECLAB_TASKFLOW_BACKEND=<name>``) to opt in.
 
     The *endpoint* parameter is accepted for forward compatibility but
     is not used for backend selection.

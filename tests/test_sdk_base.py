@@ -38,24 +38,23 @@ def test_resolve_backend_default_is_openai_agents(monkeypatch):
     assert sdk.resolve_backend_name() == "openai_agents"
 
 
-def test_resolve_backend_copilot_endpoint_prefers_copilot_when_installed(monkeypatch):
+def test_resolve_backend_copilot_endpoint_does_not_auto_select(monkeypatch):
+    """Backend selection is always explicit -- endpoint URL is not used."""
     monkeypatch.delenv("SECLAB_TASKFLOW_BACKEND", raising=False)
-    pytest.importorskip("copilot")
-    assert (
-        sdk.resolve_backend_name(endpoint="https://api.githubcopilot.com")
-        == "copilot_sdk"
-    )
-
-
-def test_resolve_backend_copilot_endpoint_falls_back_when_missing(monkeypatch):
-    monkeypatch.delenv("SECLAB_TASKFLOW_BACKEND", raising=False)
-    # Force the optional import to fail by stashing a sentinel in sys.modules.
-    import sys
-
-    monkeypatch.setitem(sys.modules, "copilot", None)
     assert (
         sdk.resolve_backend_name(endpoint="https://api.githubcopilot.com")
         == "openai_agents"
+    )
+
+
+def test_resolve_backend_explicit_overrides_endpoint(monkeypatch):
+    monkeypatch.delenv("SECLAB_TASKFLOW_BACKEND", raising=False)
+    assert (
+        sdk.resolve_backend_name(
+            explicit="anthropic_sdk",
+            endpoint="https://api.githubcopilot.com",
+        )
+        == "anthropic_sdk"
     )
 
 

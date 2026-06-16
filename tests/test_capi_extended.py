@@ -80,6 +80,17 @@ class TestSupportsToolCalls:
             models = {mid: {"id": mid}}
             assert supports_tool_calls(mid, models) is True
 
+    def test_openai_endpoint_gpt5_series(self, monkeypatch):
+        """OpenAI endpoint returns True for gpt-5 family (regression: the
+        default_model was bumped to gpt-5.5 but _CHAT_PREFIXES needed
+        updating to include 'gpt-5')."""
+        monkeypatch.setenv("AI_API_ENDPOINT", "https://api.openai.com/v1")
+        for mid in ("gpt-5", "gpt-5.5", "gpt-5.5-mini", "gpt-5.6"):
+            models = {mid: {"id": mid}}
+            assert supports_tool_calls(mid, models) is True, (
+                f"{mid} should be recognized as a tool-call-capable chat model"
+            )
+
     def test_openai_endpoint_non_chat_model(self, monkeypatch):
         """OpenAI endpoint returns False for embeddings/audio/image models."""
         monkeypatch.setenv("AI_API_ENDPOINT", "https://api.openai.com/v1")

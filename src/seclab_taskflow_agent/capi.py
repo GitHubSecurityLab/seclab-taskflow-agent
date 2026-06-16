@@ -50,6 +50,7 @@ class APIProvider:
     models_catalog: str = "/models"
     default_model: str = "gpt-4.1"
     extra_headers: Mapping[str, str] = field(default_factory=dict)
+    bearer_auth: bool = True  # Use Authorization: Bearer (not x-api-key)
 
     def __post_init__(self) -> None:
         # Ensure base_url ends with / so httpx URL.join() preserves the path
@@ -110,7 +111,7 @@ class _OpenAIProvider(APIProvider):
     we maintain a prefix allowlist of known chat-completion model families.
     """
 
-    _CHAT_PREFIXES = ("gpt-3.5", "gpt-4", "o1", "o3", "o4", "chatgpt-")
+    _CHAT_PREFIXES = ("gpt-3.5", "gpt-4", "gpt-5", "o1", "o3", "o4", "chatgpt-")
 
     def check_tool_calls(self, _model: str, model_info: dict) -> bool:
         model_id = model_info.get("id", "").lower()
@@ -172,8 +173,9 @@ def get_provider(endpoint: str | None = None) -> APIProvider:
         if upstream:
             return dataclasses.replace(upstream, base_url=url)
 
-    # Unknown endpoint — return a generic provider with the given base URL
-    return APIProvider(name="custom", base_url=url, default_model="please-set-default-model-via-env")
+    # Unknown endpoint — return a generic provider using native SDK auth.
+    return APIProvider(name="custom", base_url=url, bearer_auth=False,
+                       default_model="please-set-default-model-via-env")
 
 
 # ---------------------------------------------------------------------------

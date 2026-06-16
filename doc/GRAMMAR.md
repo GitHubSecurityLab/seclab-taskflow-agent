@@ -524,6 +524,7 @@ api_type: chat_completions        # default for all models
 models:
   gpt_default: gpt-4.1
   gpt_responses: gpt-5.1
+  claude_native: claude-opus-4.7
 model_settings:
   gpt_default:
     temperature: 0.7
@@ -532,6 +533,11 @@ model_settings:
     endpoint: https://api.githubcopilot.com
     token: CAPI_TOKEN             # env var name containing the API key
     temperature: 0.5
+  claude_native:
+    api_type: messages            # use the Anthropic Messages API
+    backend: anthropic_sdk
+    reasoning:
+      effort: high
 ```
 
 The following keys in `model_settings` are handled by the engine and are not
@@ -539,9 +545,9 @@ passed to the underlying model provider:
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `api_type` | `"chat_completions"` or `"responses"` | Inherited from top-level `api_type`, or `"chat_completions"` |
+| `api_type` | `"chat_completions"`, `"responses"`, or `"messages"` | Inherited from top-level `api_type`, or `"chat_completions"` |
+| `backend` | SDK adapter: `"openai_agents"`, `"copilot_sdk"`, or `"anthropic_sdk"` | Inherited from top-level `backend`, or `"openai_agents"` |
 | `endpoint` | API base URL for this model | The global `AI_API_ENDPOINT` env var |
 | `token` | Name of an environment variable containing the API key | Uses `AI_API_TOKEN` / `COPILOT_TOKEN` |
 
-All other keys (e.g. `temperature`, `top_p`) are passed through as model
-parameters to the OpenAI SDK.
+All other keys (e.g. `temperature`, `top_p`, `reasoning`) are forwarded to the selected SDK backend. Each backend decides what to do with each key: `openai_agents` accepts the standard OpenAI parameter set; `anthropic_sdk` forwards a curated subset (currently `temperature`, `top_p`, `reasoning`, `max_tokens`, `stream_thinking`, `prompt_caching`) and silently ignores keys outside that set; `copilot_sdk` consumes the keys its SDK exposes (e.g. `reasoning_effort`) and **rejects** unsupported keys at validate time with `BackendCapabilityError` (currently `temperature` and `parallel_tool_calls`) rather than silently dropping them. Consult the backend-specific docs if in doubt.
