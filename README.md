@@ -205,7 +205,7 @@ Python >= 3.10 or Docker
 
 ## Configuration
 
-Provide a GitHub token for an account that is entitled to use [GitHub Models](https://models.github.ai) via the `AI_API_TOKEN` environment variable. Further configuration is use case dependent, i.e. pending which MCP servers you'd like to use in your taskflows. In a terminal, you can add `AI_API_TOKEN` to the environment like this:
+Provide a GitHub token for an account that is entitled to use [GitHub Copilot](https://github.com/features/copilot) via the `AI_API_TOKEN` environment variable. Further configuration is use case dependent, i.e. pending which MCP servers you'd like to use in your taskflows. In a terminal, you can add `AI_API_TOKEN` to the environment like this:
 
 ```sh
 export AI_API_TOKEN=<your_github_token>
@@ -226,7 +226,7 @@ Example:
 ```sh
 # MCP configs
 CODEQL_DBS_BASE_PATH="/app/my_data/codeql_databases"
-AI_API_ENDPOINT="https://models.github.ai/inference"
+AI_API_ENDPOINT="https://api.githubcopilot.com"
 ```
 
 ## Deploying from Source
