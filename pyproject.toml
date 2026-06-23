@@ -90,7 +90,7 @@ dependencies = [
   "pluggy==1.6.0",
   "pycparser==2.23",
   "pydantic==2.13.3",
-  "pydantic-settings==2.14.0",
+  "pydantic-settings==2.14.2",
   "pydantic_core==2.46.3",
   "Pygments==2.20.0",
   "pyperclip==1.9.0",
