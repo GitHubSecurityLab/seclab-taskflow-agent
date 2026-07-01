@@ -24,7 +24,7 @@ You can find a detailed overview of the taskflow grammar [here](doc/GRAMMAR.md) 
 ```
 ┌─────────────────────────────────────────────────────┐
 │                   CLI (cli.py)                      │
-│  Typer-based entry point: -p, -t, -l, -g, -m, --resume│
+│  Typer-based entry point: -p, -t, -l, -g, -m, --resume, --lint│
 └─────────────────────┬───────────────────────────────┘
                       │
 ┌─────────────────────▼───────────────────────────────┐
@@ -172,6 +172,30 @@ Error: [BadRequestError] model 'foo' not found
 
 # Full traceback
 python -m seclab_taskflow_agent --debug -t examples.taskflows.echo
+```
+
+### Linting and Schema
+
+Taskflows can be validated offline, without making any model calls, using
+`--lint`. This resolves the taskflow and every document it references
+(personalities, toolboxes, model configs, reusable taskflows), checks model
+names against the model config, validates prompt/`over` template syntax, and
+reports unknown fields (likely typos):
+
+```bash
+# Validate a taskflow and its references
+python -m seclab_taskflow_agent --lint -t examples.taskflows.echo
+
+# Treat unknown fields as errors (not just warnings)
+python -m seclab_taskflow_agent --lint --strict -t examples.taskflows.echo
+```
+
+`--lint` exits non-zero if any errors are found, so it can gate CI. The JSON
+Schema for each grammar document type can be printed with `--schema` for editor
+integration and external validation:
+
+```bash
+python -m seclab_taskflow_agent --schema
 ```
 
 ### MCP Environment Denylist
