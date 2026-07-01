@@ -20,7 +20,6 @@ __all__ = [
 ]
 
 import asyncio
-import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -39,6 +38,8 @@ from .mcp_prompt import mcp_system_prompt
 from .mcp_utils import compress_name, mcp_client_params
 from .models import ModelConfigDocument, PersonalityDocument, TaskDefinition
 from .render_utils import flush_async_output, render_model_output
+from .results import ResultStore, ToolResult, decode_tool_result, normalize_openai_tool_output
+from .output_schema import validate_output
 from .sdk import AgentSpec, MCPServerSpec, get_backend, resolve_backend_name
 from .sdk.errors import (
     BackendBadRequestError,
@@ -47,7 +48,7 @@ from .sdk.errors import (
     BackendUnexpectedError,
 )
 from .shell_utils import shell_tool_call
-from .template_utils import render_template
+from .template_utils import evaluate_expression, render_template
 
 if TYPE_CHECKING:  # Hook callbacks still use openai-agents types; fully decoupling them is a later slice.
     from agents import Agent, RunContextWrapper, TContext, Tool
@@ -267,6 +268,41 @@ def _completion(oks: list[bool], policy: str) -> bool:
     return all(oks)
 
 
+def _capture_task_output(
+    store: ResultStore,
+    output_id: str,
+    schema: dict[str, Any],
+    task_name: str,
+) -> None:
+    """Capture a task's final tool result as a named typed output.
+
+    The task's output is its most recent tool result. When *schema* is
+    non-empty the decoded value is validated/coerced against it (raising a
+    clear error on mismatch); otherwise the decoded value is stored as-is,
+    falling back to the raw text when it is not JSON. The result is exposed to
+    later tasks as ``outputs.<output_id>``.
+    """
+    last = store.last()
+    if last is None:
+        if schema:
+            raise ValueError(
+                f"task {task_name!r} declares 'outputs' but produced no tool result to capture"
+            )
+        store.set_output(output_id, None)
+        return
+
+    if schema:
+        value = decode_tool_result(last)
+        validated = validate_output(schema, value, model_name=f"{output_id}_output")
+        store.set_output(output_id, validated)
+    else:
+        try:
+            value = decode_tool_result(last)
+        except ValueError:
+            value = last.text
+        store.set_output(output_id, value)
+
+
 async def _fan_out_deploys(
     work_items: list[tuple[Any, ResolvedModel]],
     deploy: Callable[[Any, ResolvedModel], Awaitable[bool]],
@@ -332,58 +368,78 @@ async def _fan_out_deploys(
 async def _build_prompts_to_run(
     task_prompt: str,
     repeat_prompt: bool,
-    last_mcp_tool_results: list[str],
+    store: ResultStore,
     available_tools: AvailableTools,
     global_variables: dict[str, Any],
     inputs: dict[str, Any],
+    outputs: dict[str, Any] | None = None,
+    over: str = "",
 ) -> list[str]:
     """Build the list of prompts to execute for a task.
 
     For regular tasks the list contains a single rendered prompt.  When
-    ``repeat_prompt`` is enabled, the last MCP tool result is parsed as an
-    iterable and a prompt is rendered for each element.
+    ``repeat_prompt`` is enabled, an iterable is derived and a prompt is
+    rendered for each element:
+
+    * If ``over`` is set, it is evaluated as an expression against the
+      template context (``globals`` / ``inputs`` / ``outputs``) to yield the
+      iterable directly. This is the explicit, typed path and does not consume
+      the tool-result carry-over.
+    * Otherwise the previous task's last tool result is decoded from *store*
+      (the legacy path), and consumed (popped) after all prompts render.
 
     Args:
         task_prompt: The raw or pre-rendered prompt template string.
-        repeat_prompt: Whether to expand prompts over MCP tool results.
-        last_mcp_tool_results: Mutable list of prior MCP tool result strings.
+        repeat_prompt: Whether to expand prompts over an iterable.
+        store: Per-run result store providing the last tool result.
         available_tools: Tool registry (passed through to template rendering).
         global_variables: Global template variables.
         inputs: Task-level input variables.
+        outputs: Named task outputs available as ``outputs.<id>``.
+        over: Optional expression selecting the iterable explicitly.
 
     Returns:
         List of rendered prompt strings to execute.
 
     Raises:
-        ValueError: If the last MCP result is missing or not valid JSON.
+        IndexError: If the legacy path has no previous tool result.
+        ValueError: If the derived value is not valid JSON or not iterable.
     """
+    outputs = outputs or {}
     prompts_to_run: list[str] = []
     if repeat_prompt:
         if "result" not in task_prompt.lower():
             logging.warning("repeat_prompt enabled but no {{ result }} in prompt")
-        try:
-            last_result = json.loads(last_mcp_tool_results[-1])
-        except IndexError:
-            logging.critical("No last MCP tool result available")
-            raise
-        except json.JSONDecodeError as exc:
-            logging.critical("Could not parse tool result as JSON: %s", last_mcp_tool_results[-1][:200])
-            raise ValueError("Tool result is not valid JSON") from exc
 
-        text = last_result.get("text", "")
-        try:
-            iterable_result = json.loads(text)
-        except json.JSONDecodeError as exc:
-            logging.critical("Could not parse result text: %s", text)
-            raise ValueError("Result text is not valid JSON") from exc
+        if over:
+            # Explicit, typed iterable: evaluate the expression against the
+            # full template context. Does not consume the carry-over stack.
+            try:
+                iterable_result = evaluate_expression(
+                    over,
+                    available_tools,
+                    globals_dict=global_variables,
+                    inputs_dict=inputs,
+                    outputs_dict=outputs,
+                )
+            except jinja2.TemplateError as exc:
+                logging.critical("Could not evaluate over expression %r: %s", over, exc)
+                raise ValueError(f"Failed to evaluate 'over' expression: {exc}") from exc
+        else:
+            last = store.last()
+            if last is None:
+                logging.critical("No last tool result available")
+                raise IndexError("No last tool result available for repeat_prompt")
+            iterable_result = decode_tool_result(last)
+
         try:
             iter(iterable_result)
         except TypeError:
-            logging.critical("Last MCP tool result is not iterable")
+            logging.critical("repeat_prompt iterable is not iterable: %r", iterable_result)
             raise
 
         if not iterable_result:
-            await render_model_output("** 🤖❗MCP tool result iterable is empty!\n")
+            await render_model_output("** 🤖❗repeat_prompt iterable is empty!\n")
         else:
             logging.debug("Rendering templated prompts for results: %s", iterable_result)
             for value in iterable_result:
@@ -394,15 +450,18 @@ async def _build_prompts_to_run(
                         globals_dict=global_variables,
                         inputs_dict=inputs,
                         result_value=value,
+                        outputs_dict=outputs,
                     )
                     prompts_to_run.append(rendered_prompt)
                 except jinja2.TemplateError as e:
                     logging.error("Error rendering template for result %s: %s", value, e)
                     raise ValueError(f"Template rendering failed: {e}")
 
-        # Consume only after all prompts rendered successfully so that
-        # the result remains available for retry/resume on failure.
-        last_mcp_tool_results.pop()
+        # Legacy path consumes the tool result only after all prompts rendered
+        # successfully, so it remains available for retry/resume on failure.
+        # The explicit ``over`` path reads named data and never consumes.
+        if not over:
+            store.pop_last()
     else:
         prompts_to_run.append(task_prompt)
     return prompts_to_run
@@ -428,6 +487,7 @@ async def deploy_task_agents(
     run_hooks: TaskRunHooks | None = None,
     agent_hooks: TaskAgentHooks | None = None,
     stream_label: str | None = None,
+    record_tool_result: Callable[[ToolResult], Awaitable[None]] | None = None,
 ) -> bool:
     """Deploy and run task agents with MCP servers.
 
@@ -444,6 +504,9 @@ async def deploy_task_agents(
         stream_label: Optional human-readable label for this run's buffered
             output block (used to tag per-model streams in multi-model tasks).
             Only takes effect when ``async_task`` is True.
+        record_tool_result: Neutral sink for tool results surfaced by backends
+            that stream ``ToolEnd`` events (copilot/anthropic). The openai
+            adapter captures results via ``run_hooks.on_tool_end`` instead.
 
     Returns:
         True if the task completed successfully.
@@ -591,6 +654,7 @@ async def deploy_task_agents(
                 max_api_retry=MAX_API_RETRY,
                 initial_rate_limit_backoff=RATE_LIMIT_BACKOFF,
                 max_rate_limit_backoff=MAX_RATE_LIMIT_BACKOFF,
+                record_tool_result=record_tool_result,
             )
             complete = True
 
@@ -678,11 +742,19 @@ async def run_main(
     # already handle. Idempotent — safe to call on every run_main.
     start_watchdog()
 
-    last_mcp_tool_results: list[str] = []
+    store = ResultStore()
 
     async def on_tool_end_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool, result: str) -> None:
+        # openai-agents delivers tool results here as a backend-specific
+        # serialised string; normalise to a neutral ToolResult before storing.
         watchdog_ping()
-        last_mcp_tool_results.append(result)
+        store.record(normalize_openai_tool_output(result, tool_name=getattr(tool, "name", "")))
+
+    async def record_tool_result(tool_result: ToolResult) -> None:
+        # Neutral sink for backends (copilot/anthropic) that surface tool
+        # results as stream events rather than via openai-agents RunHooks.
+        watchdog_ping()
+        store.record(tool_result)
 
     async def on_tool_start_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool) -> None:
         watchdog_ping()
@@ -698,6 +770,7 @@ async def run_main(
             {personality_path: personality},
             prompt or "",
             run_hooks=TaskRunHooks(on_tool_end=on_tool_end_hook, on_tool_start=on_tool_start_hook),
+            record_tool_result=record_tool_result,
         )
 
     if taskflow_path or resume_session_id:
@@ -711,7 +784,7 @@ async def run_main(
             taskflow_path = session.taskflow_path
             cli_globals = session.cli_globals
             prompt = session.prompt
-            last_mcp_tool_results = list(session.last_tool_results)
+            store = ResultStore.from_snapshot(session.result_snapshot)
             # Restore persisted model config unless explicitly overridden
             if not cli_model_config and session.cli_model_config:
                 cli_model_config = session.cli_model_config
@@ -794,6 +867,11 @@ async def run_main(
             completion_policy = task.completion
             # Bound on concurrent model runs (0 == run all models at once).
             model_concurrency = task.model_concurrency or len(resolved_models)
+            # Typed named outputs (M2): id names the task's captured output;
+            # outputs declares its schema; over selects a repeat_prompt iterable.
+            task_output_id = task.id
+            task_output_schema = task.outputs or {}
+            over = task.over or ""
 
             # Render prompt template (skip if repeat_prompt — result not yet available)
             if task_prompt and not repeat_prompt:
@@ -803,6 +881,7 @@ async def run_main(
                         available_tools=available_tools,
                         globals_dict=global_variables,
                         inputs_dict=inputs,
+                        outputs_dict=store.outputs,
                     )
                 except jinja2.TemplateError as e:
                     logging.error("Template rendering error: %s", e)
@@ -810,16 +889,17 @@ async def run_main(
 
             with TmpEnv(env, context={"globals": global_variables}):
                 prompts_to_run: list[str] = await _build_prompts_to_run(
-                    task_prompt, repeat_prompt, last_mcp_tool_results,
+                    task_prompt, repeat_prompt, store,
                     available_tools, global_variables, inputs,
+                    outputs=store.outputs, over=over,
                 )
 
                 async def run_prompts(async_task: bool = False, max_concurrent_tasks: int = 5) -> bool:
                     if run:
                         await render_model_output("** 🤖🐚 Executing Shell Task\n")
                         try:
-                            result = shell_tool_call(run).content[0].model_dump_json()
-                            last_mcp_tool_results.append(result)
+                            content = shell_tool_call(run).content[0]
+                            store.record(ToolResult(tool_name="shell", text=getattr(content, "text", "")))
                             return True
                         except RuntimeError as e:
                             await render_model_output(f"** 🤖❗ Shell Task Exception: {e}\n")
@@ -860,20 +940,22 @@ async def run_main(
                     async def _deploy(payload: tuple[dict[str, Any], str], rm: ResolvedModel) -> bool:
                         ra, pp = payload
                         # Isolate multi-model tool-result capture: concurrent
-                        # models must not interleave into the shared
-                        # last_mcp_tool_results (which feeds downstream
-                        # repeat_prompt / session checkpoints). Single-model
-                        # runs keep the shared sink for backwards compatibility.
+                        # models must not interleave into the shared result
+                        # store (which feeds downstream repeat_prompt / typed
+                        # outputs / session checkpoints). Single-model runs keep
+                        # the shared sink for backwards compatibility.
                         if multi_model:
                             async def _isolated_tool_end(context, agent, tool, result) -> None:  # noqa: ANN001
                                 watchdog_ping()
                             run_hooks = TaskRunHooks(
                                 on_tool_end=_isolated_tool_end, on_tool_start=on_tool_start_hook
                             )
+                            branch_record = None
                         else:
                             run_hooks = TaskRunHooks(
                                 on_tool_end=on_tool_end_hook, on_tool_start=on_tool_start_hook
                             )
+                            branch_record = record_tool_result
                         return await deploy_task_agents(
                             available_tools,
                             ra,
@@ -885,6 +967,7 @@ async def run_main(
                             exclude_from_context=exclude_from_context,
                             max_turns=max_turns,
                             run_hooks=run_hooks,
+                            record_tool_result=branch_record,
                             model=rm.model,
                             model_par=rm.model_settings,
                             api_type=rm.api_type,
@@ -967,13 +1050,22 @@ async def run_main(
                     )
                     break
 
+                # Capture this task's typed named output (M2). The task's
+                # output is its final tool result; when an ``outputs`` schema
+                # is declared it is validated/coerced before being stored under
+                # ``outputs.<id>`` for downstream tasks to consume by name.
+                if task_output_id and not multi_model:
+                    _capture_task_output(
+                        store, task_output_id, task_output_schema, task_name
+                    )
+
                 # Checkpoint after task (must_complete failures break above
                 # without advancing the resume cursor)
                 session.record_task(
                     index=task_index,
                     name=task_name,
                     success=task_complete,
-                    tool_results=list(last_mcp_tool_results),
+                    result_snapshot=store.snapshot(),
                 )
 
         # All tasks completed successfully

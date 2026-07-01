@@ -13,19 +13,19 @@ from seclab_taskflow_agent.session import TaskflowSession, session_dir
 class TestSessionEdgeCases:
     """Edge-case tests for TaskflowSession."""
 
-    def test_record_task_empty_tool_results(self, tmp_path, monkeypatch):
-        """record_task with empty list sets last_tool_results to []."""
+    def test_record_task_empty_snapshot(self, tmp_path, monkeypatch):
+        """record_task with an empty snapshot stores it."""
         monkeypatch.setattr("seclab_taskflow_agent.session._data_dir", lambda: tmp_path)
         s = TaskflowSession(taskflow_path="test.flow")
-        s.record_task(index=0, name="t0", success=True, tool_results=[])
-        assert s.last_tool_results == []
+        s.record_task(index=0, name="t0", success=True, result_snapshot={"results": [], "outputs": {}})
+        assert s.result_snapshot == {"results": [], "outputs": {}}
 
-    def test_record_task_none_tool_results(self, tmp_path, monkeypatch):
-        """record_task with None tool_results defaults to []."""
+    def test_record_task_none_snapshot_leaves_default(self, tmp_path, monkeypatch):
+        """record_task with None snapshot leaves the default empty dict."""
         monkeypatch.setattr("seclab_taskflow_agent.session._data_dir", lambda: tmp_path)
         s = TaskflowSession(taskflow_path="test.flow")
-        s.record_task(index=0, name="t0", success=True, tool_results=None)
-        assert s.last_tool_results == []
+        s.record_task(index=0, name="t0", success=True, result_snapshot=None)
+        assert s.result_snapshot == {}
 
     def test_next_task_index_non_sequential(self, tmp_path, monkeypatch):
         """next_task_index uses max(indices) + 1, even if non-sequential."""
@@ -35,15 +35,16 @@ class TestSessionEdgeCases:
         s.record_task(index=5, name="t5", success=True)
         assert s.next_task_index == 6
 
-    def test_save_load_roundtrip_preserves_tool_results(self, tmp_path, monkeypatch):
-        """save + load roundtrip preserves last_tool_results."""
+    def test_save_load_roundtrip_preserves_snapshot(self, tmp_path, monkeypatch):
+        """save + load roundtrip preserves result_snapshot."""
         monkeypatch.setattr("seclab_taskflow_agent.session._data_dir", lambda: tmp_path)
         s = TaskflowSession(taskflow_path="test.flow")
-        s.record_task(index=0, name="t0", success=True, tool_results=["res1", "res2"])
+        snap = {"results": [{"tool_name": "t", "text": "[1]", "structured": None}], "outputs": {"o": [1]}}
+        s.record_task(index=0, name="t0", success=True, result_snapshot=snap)
         sid = s.session_id
 
         loaded = TaskflowSession.load(sid)
-        assert loaded.last_tool_results == ["res1", "res2"]
+        assert loaded.result_snapshot == snap
         assert loaded.taskflow_path == "test.flow"
 
     def test_list_sessions_skips_corrupt_files(self, tmp_path, monkeypatch):
@@ -68,17 +69,17 @@ class TestSessionEdgeCases:
         """Multiple record_task calls accumulate completed_tasks."""
         monkeypatch.setattr("seclab_taskflow_agent.session._data_dir", lambda: tmp_path)
         s = TaskflowSession(taskflow_path="test.flow")
-        s.record_task(index=0, name="t0", success=True, tool_results=["r0"])
-        s.record_task(index=1, name="t1", success=False, tool_results=["r1"])
-        s.record_task(index=2, name="t2", success=True, tool_results=["r2"])
+        s.record_task(index=0, name="t0", success=True, result_snapshot={"results": [], "outputs": {"a": 0}})
+        s.record_task(index=1, name="t1", success=False, result_snapshot={"results": [], "outputs": {"a": 1}})
+        s.record_task(index=2, name="t2", success=True, result_snapshot={"results": [], "outputs": {"a": 2}})
 
         assert len(s.completed_tasks) == 3
         assert s.completed_tasks[0].name == "t0"
         assert s.completed_tasks[0].result is True
         assert s.completed_tasks[1].result is False
         assert s.completed_tasks[2].name == "t2"
-        # last_tool_results reflects the last call
-        assert s.last_tool_results == ["r2"]
+        # result_snapshot reflects the last call
+        assert s.result_snapshot == {"results": [], "outputs": {"a": 2}}
 
     def test_mark_failed_then_save_preserves_error(self, tmp_path, monkeypatch):
         """mark_failed persists the error through save/load."""

@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# Example: typed, named object passing between tasks.
+# The first task produces a structured object validated against an inline
+# `outputs` schema and exposed as `outputs.fruit_list`. The second task
+# consumes it explicitly with `over:` instead of the implicit last-tool-result.
+# See doc/GRAMMAR.md "Typed named outputs".
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: taskflow
+
+taskflow:
+  - task:
+      id: fruit_list
+      # a shell task produces the structured object deterministically
+      run: |
+        echo '{"items": ["apples", "bananas", "oranges"]}'
+      # validate/coerce the produced value against this schema before it is
+      # stored as outputs.fruit_list
+      outputs:
+        items: list[str]
+  - task:
+      repeat_prompt: true
+      # iterate the typed output by name (no double-JSON heuristic)
+      over: "outputs.fruit_list.items"
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        In one short sentence, say something nice about {{ result }}.

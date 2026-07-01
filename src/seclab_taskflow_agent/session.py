@@ -39,7 +39,6 @@ class CompletedTask(BaseModel):
     index: int
     name: str = ""
     result: bool = False
-    tool_results: list[str] = Field(default_factory=list)
 
 
 class TaskflowSession(BaseModel):
@@ -63,8 +62,9 @@ class TaskflowSession(BaseModel):
     # CLI model config override persisted for deterministic resume
     cli_model_config: str = ""
 
-    # Accumulated tool results carried across tasks (used by repeat_prompt)
-    last_tool_results: list[str] = Field(default_factory=list)
+    # Snapshot of the per-run ResultStore (ordered tool results + named
+    # outputs) carried across tasks and restored on resume.
+    result_snapshot: dict = Field(default_factory=dict)
 
     @property
     def next_task_index(self) -> int:
@@ -91,7 +91,7 @@ class TaskflowSession(BaseModel):
         index: int,
         name: str,
         success: bool,
-        tool_results: list[str] | None = None,
+        result_snapshot: dict | None = None,
     ) -> None:
         """Record a completed task and save the checkpoint."""
         self.completed_tasks.append(
@@ -99,10 +99,10 @@ class TaskflowSession(BaseModel):
                 index=index,
                 name=name,
                 result=success,
-                tool_results=tool_results or [],
             )
         )
-        self.last_tool_results = list(tool_results or [])
+        if result_snapshot is not None:
+            self.result_snapshot = result_snapshot
         self.save()
 
     def mark_finished(self) -> None:

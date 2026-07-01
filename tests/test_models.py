@@ -171,6 +171,43 @@ class TestMultiModel:
             TaskDefinition(user_prompt="hi", models=[123])
 
 
+class TestTypedOutputs:
+    """Test the typed named outputs grammar (id / outputs / over)."""
+
+    def test_defaults(self):
+        t = TaskDefinition(user_prompt="hi")
+        assert t.id == ""
+        assert t.outputs == {}
+        assert t.over == ""
+
+    def test_id_and_outputs_accepted(self):
+        t = TaskDefinition(
+            id="list_functions",
+            user_prompt="list them",
+            outputs={"functions": {"type": "list", "items": {"name": "str", "body": "str"}}},
+        )
+        assert t.id == "list_functions"
+        assert "functions" in t.outputs
+
+    def test_invalid_outputs_schema_rejected_at_load(self):
+        with pytest.raises(ValidationError, match="invalid 'outputs' schema"):
+            TaskDefinition(id="x", user_prompt="hi", outputs={"f": "not-a-real-type"})
+
+    def test_over_requires_repeat_prompt(self):
+        with pytest.raises(ValidationError, match="'over' only applies to repeat_prompt"):
+            TaskDefinition(user_prompt="{{ result }}", over="outputs.x.items")
+
+    def test_over_with_repeat_prompt_ok(self):
+        t = TaskDefinition(user_prompt="{{ result }}", repeat_prompt=True, over="outputs.x.items")
+        assert t.over == "outputs.x.items"
+
+    def test_typed_outputs_rejected_on_multi_model(self):
+        with pytest.raises(ValidationError, match="not yet supported on multi-model"):
+            TaskDefinition(id="x", user_prompt="hi", models=["a", "b"])
+        with pytest.raises(ValidationError, match="not yet supported on multi-model"):
+            TaskDefinition(user_prompt="hi", models=["a", "b"], outputs={"f": "str"})
+
+
 class TestTaskflowDocument:
     """Test complete taskflow document parsing."""
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 import jinja2
 
-__all__ = ["PromptLoader", "create_jinja_environment", "env_function", "render_template"]
+__all__ = ["PromptLoader", "create_jinja_environment", "env_function", "evaluate_expression", "render_template"]
 
 if TYPE_CHECKING:
     from .available_tools import AvailableTools
@@ -81,6 +81,29 @@ def env_function(var_name: str, default: Optional[str] = None, required: bool = 
     return value or ""
 
 
+class _DataFirstEnvironment(jinja2.Environment):
+    """Jinja environment that prefers mapping item access for ``a.b``.
+
+    In stock Jinja, ``foo.bar`` tries ``getattr(foo, 'bar')`` before
+    ``foo['bar']``. For a data-passing DSL that means dict keys named after
+    dict methods (``items``, ``keys``, ``values``, ``get``, ``copy``, ...)
+    resolve to the *method* instead of the data, e.g. ``outputs.x.items``
+    returns the ``dict.items`` builtin. This subclass flips the order so
+    mapping keys win, falling back to attribute access for objects. For keys
+    that are not dict methods the behaviour is identical to stock Jinja.
+    """
+
+    def getattr(self, obj: Any, attribute: str) -> Any:  # noqa: N802 - Jinja API
+        try:
+            return obj[attribute]
+        except (TypeError, LookupError):
+            pass
+        try:
+            return getattr(obj, attribute)
+        except AttributeError:
+            return self.undefined(obj=obj, name=attribute)
+
+
 def create_jinja_environment(available_tools: "AvailableTools") -> jinja2.Environment:
     """Create configured Jinja2 environment for taskflow templates.
 
@@ -90,7 +113,7 @@ def create_jinja_environment(available_tools: "AvailableTools") -> jinja2.Enviro
     Returns:
         Configured Jinja2 Environment
     """
-    env = jinja2.Environment(
+    env = _DataFirstEnvironment(
         loader=PromptLoader(available_tools),
         # Use same delimiters as custom system
         variable_start_string='{{',
@@ -118,6 +141,7 @@ def render_template(
     globals_dict: Optional[Dict[str, Any]] = None,
     inputs_dict: Optional[Dict[str, Any]] = None,
     result_value: Optional[Any] = None,
+    outputs_dict: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Render a template string with provided context.
 
@@ -127,6 +151,7 @@ def render_template(
         globals_dict: Global variables dict
         inputs_dict: Input variables dict
         result_value: Result value for repeat_prompt
+        outputs_dict: Named task outputs, exposed as ``outputs.<id>``
 
     Returns:
         Rendered template string
@@ -141,27 +166,65 @@ def render_template(
         # Render with result
         render_template("{{ result.name }}", tools, result_value={'name': 'test'})
 
-        # Render with all context types
+        # Render with a named task output
         render_template(
-            "{{ globals.x }} {{ inputs.y }} {{ result.z }}",
+            "{{ outputs.list_functions.functions }}",
             tools,
-            globals_dict={'x': 1},
-            inputs_dict={'y': 2},
-            result_value={'z': 3}
+            outputs_dict={'list_functions': {'functions': [...]}},
         )
     """
     jinja_env = create_jinja_environment(available_tools)
 
     # Build template context
-    context = {
-        'globals': globals_dict or {},
-        'inputs': inputs_dict or {},
-    }
-
-    # Add result if provided
-    if result_value is not None:
-        context['result'] = result_value
+    context = _build_context(globals_dict, inputs_dict, outputs_dict, result_value)
 
     # Render template
     template = jinja_env.from_string(template_str)
     return template.render(**context)
+
+
+def evaluate_expression(
+    expression: str,
+    available_tools: "AvailableTools",
+    globals_dict: Optional[Dict[str, Any]] = None,
+    inputs_dict: Optional[Dict[str, Any]] = None,
+    outputs_dict: Optional[Dict[str, Any]] = None,
+    result_value: Optional[Any] = None,
+) -> Any:
+    """Evaluate a Jinja expression against the template context.
+
+    Unlike :func:`render_template`, this returns the *actual Python object*
+    the expression evaluates to (e.g. a list), not its string rendering. Used
+    for the ``over:`` iterable selector so a typed list can be iterated
+    directly instead of being round-tripped through JSON.
+
+    The expression may be given bare (``outputs.foo.items``) or wrapped in
+    ``{{ ... }}``; the wrapping is stripped for convenience.
+
+    Raises:
+        jinja2.TemplateError: On compilation or evaluation errors.
+    """
+    expr = expression.strip()
+    if expr.startswith("{{") and expr.endswith("}}"):
+        expr = expr[2:-2].strip()
+    jinja_env = create_jinja_environment(available_tools)
+    context = _build_context(globals_dict, inputs_dict, outputs_dict, result_value)
+    compiled = jinja_env.compile_expression(expr)
+    return compiled(**context)
+
+
+def _build_context(
+    globals_dict: Optional[Dict[str, Any]],
+    inputs_dict: Optional[Dict[str, Any]],
+    outputs_dict: Optional[Dict[str, Any]],
+    result_value: Optional[Any],
+) -> Dict[str, Any]:
+    """Assemble the shared Jinja context for rendering and expressions."""
+    context: Dict[str, Any] = {
+        "globals": globals_dict or {},
+        "inputs": inputs_dict or {},
+        "outputs": outputs_dict or {},
+    }
+    if result_value is not None:
+        context["result"] = result_value
+    return context

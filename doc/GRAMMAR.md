@@ -330,6 +330,69 @@ Example:
         - seclab_taskflow_agent.toolboxes.codeql
 ```
 
+### Typed named outputs
+
+By default, data flows between tasks implicitly: `repeat_prompt` consumes the
+*last tool result* of the previous task. That is positional (whichever tool
+fired last) and untyped. A task can instead publish a **named, typed output**
+that later tasks consume by name.
+
+Three fields drive this:
+
+- `id` names a task. Its produced value (its final tool result) is exposed to
+  later tasks as `outputs.<id>`.
+- `outputs` declares an inline schema. When present, the task's value is
+  validated and coerced against it before being stored. A malformed schema is
+  rejected when the taskflow is loaded, before any model calls are made.
+- `over` is an explicit iterable selector for `repeat_prompt`: a Jinja
+  expression evaluated against the template context (so it yields a real list,
+  not a re-parsed string).
+
+Example: one task produces a typed list of functions, the next analyses each.
+
+```yaml
+  - task:
+      id: list_functions
+      agents: [seclab_taskflow_agent.personalities.assistant]
+      user_prompt: |
+        List all functions as JSON: {"functions": [{"name": ..., "body": ...}]}
+      outputs:
+        functions:
+          type: list
+          items:
+            name: str
+            body: str
+  - task:
+      repeat_prompt: true
+      over: "outputs.list_functions.functions"
+      agents: [seclab_taskflow_agent.personalities.c_auditer]
+      user_prompt: |
+        Analyze function {{ result.name }}:
+        {{ result.body }}
+```
+
+The `outputs` schema is a mapping of field name to type spec:
+
+- Scalars (as strings): `str`, `int`, `float`, `bool`, `any` (plus synonyms
+  `string`/`integer`/`number`/`boolean`). A trailing `?` marks a field
+  optional, e.g. `note: str?`.
+- Lists (as strings): `list` (list of any) or `list[T]` for a scalar `T`, e.g.
+  `tags: list[str]`.
+- Nested objects: a mapping whose keys are sub-field specs, or the explicit
+  `{type: object, fields: {...}}` form.
+- Lists of objects: `{type: list, items: <spec>}`, where `items` is any spec
+  (a scalar, a nested object mapping, etc.).
+
+Notes:
+
+- `outputs.<id>` is a template namespace alongside `globals`, `inputs`, and
+  the per-iteration `result`. Keys named after dict methods (`items`, `keys`,
+  `values`, ...) resolve to your data, not the method.
+- Without `id`/`outputs`/`over`, the implicit last-tool-result `repeat_prompt`
+  behaviour is unchanged.
+- Typed outputs are not yet supported on multi-model tasks (planned in a later
+  milestone).
+
 ### Toolboxes / MCP Servers
 
 Toolboxes are MCP server configurations. They can be defined at the Agent level or overridden at the task level. These MCP servers are started and made available to the Agents in the Agents list during a Task. The `toolboxes` field should contain a list of files for the `toolboxes` that are available for the task:

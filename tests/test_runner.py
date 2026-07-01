@@ -19,9 +19,11 @@ from seclab_taskflow_agent.models import (
     TaskflowHeader,
     TaskWrapper,
 )
+from seclab_taskflow_agent.results import ResultStore, ToolResult
 from seclab_taskflow_agent.runner import (
     ResolvedModel,
     _build_prompts_to_run,
+    _capture_task_output,
     _completion,
     _fan_out_deploys,
     _merge_reusable_task,
@@ -377,9 +379,12 @@ class TestBuildPromptsToRun:
     """Tests for _build_prompts_to_run (async, run via asyncio.run)."""
 
     @staticmethod
-    def _result_entry(data: Any) -> str:
-        """Build a JSON string mimicking an MCP tool result."""
-        return json.dumps({"text": json.dumps(data)})
+    def _store_with(*values: Any) -> ResultStore:
+        """A ResultStore whose last recorded result carries JSON of *values[-1]*."""
+        store = ResultStore()
+        for v in values:
+            store.record(ToolResult(text=json.dumps(v)))
+        return store
 
     @staticmethod
     def _run(coro):
@@ -393,7 +398,7 @@ class TestBuildPromptsToRun:
             _build_prompts_to_run(
                 task_prompt="hello world",
                 repeat_prompt=False,
-                last_mcp_tool_results=[],
+                store=ResultStore(),
                 available_tools=_mock_available_tools(),
                 global_variables={},
                 inputs={},
@@ -404,12 +409,11 @@ class TestBuildPromptsToRun:
     def test_repeat_with_json_array(self):
         """repeat_prompt with a JSON array generates one prompt per element."""
         items = [{"name": "apple"}, {"name": "banana"}]
-        results = [self._result_entry(items)]
         prompts = self._run(
             _build_prompts_to_run(
                 task_prompt="Process {{ result.name }}",
                 repeat_prompt=True,
-                last_mcp_tool_results=results,
+                store=self._store_with(items),
                 available_tools=_mock_available_tools(),
                 global_variables={},
                 inputs={},
@@ -419,30 +423,29 @@ class TestBuildPromptsToRun:
         assert "apple" in prompts[0]
         assert "banana" in prompts[1]
 
-    def test_repeat_with_dict_items(self):
-        """repeat_prompt iterates over dict keys when result is a dict."""
-        data = {"a": 1, "b": 2}
-        results = [self._result_entry(data)]
+    def test_repeat_with_structured_result(self):
+        """A structured (non-text) tool result is consumed directly."""
+        store = ResultStore()
+        store.record(ToolResult(structured=[1, 2, 3]))
         prompts = self._run(
             _build_prompts_to_run(
-                task_prompt="Key: {{ result }}",
+                task_prompt="n={{ result }}",
                 repeat_prompt=True,
-                last_mcp_tool_results=results,
+                store=store,
                 available_tools=_mock_available_tools(),
                 global_variables={},
                 inputs={},
             )
         )
-        assert len(prompts) == 2
+        assert len(prompts) == 3
 
     def test_repeat_with_empty_iterable(self):
         """repeat_prompt with an empty list renders no prompts."""
-        results = [self._result_entry([])]
         prompts = self._run(
             _build_prompts_to_run(
                 task_prompt="Process {{ result }}",
                 repeat_prompt=True,
-                last_mcp_tool_results=results,
+                store=self._store_with([]),
                 available_tools=_mock_available_tools(),
                 global_variables={},
                 inputs={},
@@ -451,13 +454,13 @@ class TestBuildPromptsToRun:
         assert prompts == []
 
     def test_raises_index_error_when_no_last_result(self):
-        """IndexError when last_mcp_tool_results is empty."""
+        """IndexError when the store has no previous result."""
         with pytest.raises(IndexError):
             self._run(
                 _build_prompts_to_run(
                     task_prompt="Process {{ result }}",
                     repeat_prompt=True,
-                    last_mcp_tool_results=[],
+                    store=ResultStore(),
                     available_tools=_mock_available_tools(),
                     global_variables={},
                     inputs={},
@@ -465,14 +468,15 @@ class TestBuildPromptsToRun:
             )
 
     def test_raises_value_error_on_non_json_result(self):
-        """ValueError when MCP result text is not valid JSON."""
-        results = [json.dumps({"text": "not json!!"})]
+        """ValueError when the tool result text is not valid JSON."""
+        store = ResultStore()
+        store.record(ToolResult(text="not json!!"))
         with pytest.raises(ValueError, match="not valid JSON"):
             self._run(
                 _build_prompts_to_run(
                     task_prompt="Process {{ result }}",
                     repeat_prompt=True,
-                    last_mcp_tool_results=results,
+                    store=store,
                     available_tools=_mock_available_tools(),
                     global_variables={},
                     inputs={},
@@ -480,29 +484,23 @@ class TestBuildPromptsToRun:
             )
 
     def test_pop_happens_after_successful_render(self):
-        """The last result is only consumed after all prompts render."""
-        items = [{"name": "x"}]
-        results = [self._result_entry(items)]
-        original_len = len(results)
-
+        """The last result is consumed (popped) after all prompts render."""
+        store = self._store_with([{"name": "x"}])
         self._run(
             _build_prompts_to_run(
                 task_prompt="Process {{ result.name }}",
                 repeat_prompt=True,
-                last_mcp_tool_results=results,
+                store=store,
                 available_tools=_mock_available_tools(),
                 global_variables={},
                 inputs={},
             )
         )
-        # After success, the entry should be consumed
-        assert len(results) == original_len - 1
+        assert store.last() is None
 
     def test_pop_does_not_happen_on_render_failure(self):
         """On template error the result is NOT consumed (available for retry)."""
-        items = [{"name": "x"}]
-        results = [self._result_entry(items)]
-
+        store = self._store_with([{"name": "x"}])
         with patch(
             "seclab_taskflow_agent.runner.render_template",
             side_effect=Exception("template boom"),
@@ -511,29 +509,64 @@ class TestBuildPromptsToRun:
                 _build_prompts_to_run(
                     task_prompt="Process {{ result.name }}",
                     repeat_prompt=True,
-                    last_mcp_tool_results=results,
+                    store=store,
                     available_tools=_mock_available_tools(),
                     global_variables={},
                     inputs={},
                 )
             )
-        # Result should still be there for retry
-        assert len(results) == 1
+        assert store.last() is not None
 
     def test_raises_type_error_on_non_iterable_result(self):
-        """TypeError when MCP result parses to a non-iterable (e.g. int)."""
-        results = [self._result_entry(42)]
+        """TypeError when the result parses to a non-iterable (e.g. int)."""
         with pytest.raises(TypeError):
             self._run(
                 _build_prompts_to_run(
                     task_prompt="Process {{ result }}",
                     repeat_prompt=True,
-                    last_mcp_tool_results=results,
+                    store=self._store_with(42),
                     available_tools=_mock_available_tools(),
                     global_variables={},
                     inputs={},
                 )
             )
+
+    def test_over_expression_selects_named_output(self):
+        """An explicit ``over`` expression iterates a named output directly."""
+        store = ResultStore()
+        store.set_output("list_fns", {"functions": [{"name": "a"}, {"name": "b"}]})
+        prompts = self._run(
+            _build_prompts_to_run(
+                task_prompt="fn={{ result.name }}",
+                repeat_prompt=True,
+                store=store,
+                available_tools=_mock_available_tools(),
+                global_variables={},
+                inputs={},
+                outputs=store.outputs,
+                over="outputs.list_fns.functions",
+            )
+        )
+        assert [p for p in prompts] == ["fn=a", "fn=b"]
+
+    def test_over_does_not_consume_tool_result(self):
+        """The explicit ``over`` path never pops the tool-result carry-over."""
+        store = self._store_with(["ignored"])
+        store.set_output("nums", [1, 2])
+        self._run(
+            _build_prompts_to_run(
+                task_prompt="{{ result }}",
+                repeat_prompt=True,
+                store=store,
+                available_tools=_mock_available_tools(),
+                global_variables={},
+                inputs={},
+                outputs=store.outputs,
+                over="outputs.nums",
+            )
+        )
+        # the tool result is still present (over reads named data instead)
+        assert store.last() is not None
 
 
 # ===================================================================
@@ -742,3 +775,55 @@ class TestFanOutDeploys:
         assert asyncio.run(
             _fan_out_deploys(items, deploy, concurrent=True, concurrency=2, completion_policy="all")
         ) is False
+
+
+# ===================================================================
+# _capture_task_output (typed named outputs)
+# ===================================================================
+
+class TestCaptureTaskOutput:
+    """Tests for capturing a task's typed named output into the store."""
+
+    def test_capture_schemaless_decodes_json(self):
+        store = ResultStore()
+        store.record(ToolResult(text=json.dumps({"functions": [1, 2]})))
+        _capture_task_output(store, "list_fns", {}, "task-0")
+        assert store.outputs["list_fns"] == {"functions": [1, 2]}
+
+    def test_capture_schemaless_falls_back_to_text(self):
+        store = ResultStore()
+        store.record(ToolResult(text="a plain answer"))
+        _capture_task_output(store, "answer", {}, "task-0")
+        assert store.outputs["answer"] == "a plain answer"
+
+    def test_capture_with_schema_validates(self):
+        store = ResultStore()
+        store.record(ToolResult(text=json.dumps({"functions": [{"name": "f", "body": "b"}]})))
+        schema = {"functions": {"type": "list", "items": {"name": "str", "body": "str"}}}
+        _capture_task_output(store, "list_fns", schema, "task-0")
+        assert store.outputs["list_fns"] == {"functions": [{"name": "f", "body": "b"}]}
+
+    def test_capture_with_schema_validation_error(self):
+        from pydantic import ValidationError
+
+        store = ResultStore()
+        store.record(ToolResult(text=json.dumps({"functions": "not-a-list"})))
+        schema = {"functions": {"type": "list", "items": {"name": "str"}}}
+        with pytest.raises(ValidationError):
+            _capture_task_output(store, "list_fns", schema, "task-0")
+
+    def test_capture_no_result_with_schema_raises(self):
+        store = ResultStore()
+        with pytest.raises(ValueError, match="produced no tool result"):
+            _capture_task_output(store, "x", {"f": "str"}, "task-0")
+
+    def test_capture_no_result_schemaless_sets_none(self):
+        store = ResultStore()
+        _capture_task_output(store, "x", {}, "task-0")
+        assert store.outputs["x"] is None
+
+    def test_capture_prefers_structured(self):
+        store = ResultStore()
+        store.record(ToolResult(structured={"functions": ["a"]}))
+        _capture_task_output(store, "out", {}, "task-0")
+        assert store.outputs["out"] == {"functions": ["a"]}

@@ -109,11 +109,19 @@ class TaskDefinition(BaseModel):
 
     name: str = ""
     description: str = ""
+    id: str = ""
     agents: list[str] = Field(default_factory=list)
     user_prompt: str = ""
     run: str = ""
     model: str = ""
     model_settings: dict[str, Any] = Field(default_factory=dict)
+    # Typed named outputs (M2): declare a schema for this task's produced
+    # value; when set, the captured output is validated/coerced and exposed to
+    # later tasks as ``outputs.<id>``.
+    outputs: dict[str, Any] = Field(default_factory=dict)
+    # Explicit iterable selector for repeat_prompt: a Jinja expression
+    # evaluated against the template context (e.g. ``outputs.list_fns.items``).
+    over: str = ""
     # Multi-model fan-out: run this task against each listed model in
     # parallel with per-model output streams. Mutually exclusive with the
     # singular ``model`` field. Empty means single-model (see ``model``).
@@ -183,6 +191,26 @@ class TaskDefinition(BaseModel):
             )
         if self.model_concurrency < 0:
             raise ValueError("'model_concurrency' must be >= 0")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_outputs(self) -> TaskDefinition:
+        # Fail fast on a malformed outputs schema at load time, before any
+        # model calls are made.
+        if self.outputs:
+            from .output_schema import OutputSchemaError, build_output_model
+
+            try:
+                build_output_model(f"{self.id or self.name or 'task'}_output", self.outputs)
+            except OutputSchemaError as exc:
+                raise ValueError(f"invalid 'outputs' schema: {exc}") from exc
+        if self.over and not self.repeat_prompt:
+            raise ValueError("'over' only applies to repeat_prompt tasks")
+        if len(self.models) > 1 and (self.id or self.outputs or self.over):
+            raise ValueError(
+                "typed outputs ('id'/'outputs'/'over') are not yet supported on multi-model "
+                "tasks (planned as a later milestone)"
+            )
         return self
 
     def effective_model_entries(self) -> list[ModelEntry]:

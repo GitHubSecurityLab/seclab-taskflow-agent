@@ -85,6 +85,55 @@ class TestJinjaEnvironment:
 class TestRenderTemplate:
     """Test template rendering."""
 
+    def test_render_outputs_namespace(self):
+        """Named task outputs are available under the outputs namespace."""
+        available_tools = AvailableTools()
+        result = render_template(
+            "{{ outputs.list_fns.functions }}",
+            available_tools,
+            outputs_dict={'list_fns': {'functions': ['a', 'b']}},
+        )
+        assert result == "['a', 'b']"
+
+    def test_dict_method_key_names_resolve_to_data(self):
+        """Keys named after dict methods (items/keys/values) resolve to data.
+
+        Stock Jinja would return the dict.items builtin for ``x.items``; the
+        data-first environment returns the value under the ``items`` key.
+        """
+        available_tools = AvailableTools()
+        for key in ("items", "keys", "values", "get"):
+            rendered = render_template(
+                "{{ outputs.x." + key + " }}",
+                available_tools,
+                outputs_dict={'x': {key: [1, 2]}},
+            )
+            assert rendered == "[1, 2]"
+
+    def test_evaluate_expression_returns_object(self):
+        """evaluate_expression returns the actual object, not its string form."""
+        from seclab_taskflow_agent.template_utils import evaluate_expression
+
+        available_tools = AvailableTools()
+        value = evaluate_expression(
+            "outputs.fruit_list.items",
+            available_tools,
+            outputs_dict={'fruit_list': {'items': ['apple', 'banana']}},
+        )
+        assert value == ['apple', 'banana']
+
+    def test_evaluate_expression_strips_braces(self):
+        """A {{ ... }}-wrapped expression is accepted and unwrapped."""
+        from seclab_taskflow_agent.template_utils import evaluate_expression
+
+        available_tools = AvailableTools()
+        value = evaluate_expression(
+            "{{ outputs.x.nums }}",
+            available_tools,
+            outputs_dict={'x': {'nums': [1, 2, 3]}},
+        )
+        assert value == [1, 2, 3]
+
     def test_render_globals(self):
         """Test rendering with global variables."""
         available_tools = AvailableTools()
