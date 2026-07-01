@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# Example: run the same prompt across multiple models in parallel.
+# Each model's answer is streamed as its own labelled output block, which
+# makes side-by-side comparison easy. See doc/GRAMMAR.md "Multiple Models".
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: taskflow
+
+model_config: examples.model_configs.multi_model
+
+taskflow:
+  - task:
+      # fan out this task across both models concurrently
+      models: [gpt_fast, gpt_alt]
+      # the task is complete only if every model answers (use `any` for
+      # first-success semantics)
+      completion: all
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        In two sentences, explain what a use-after-free bug is.

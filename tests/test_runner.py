@@ -20,10 +20,14 @@ from seclab_taskflow_agent.models import (
     TaskWrapper,
 )
 from seclab_taskflow_agent.runner import (
+    ResolvedModel,
     _build_prompts_to_run,
+    _completion,
+    _fan_out_deploys,
     _merge_reusable_task,
     _resolve_model_config,
     _resolve_task_model,
+    _resolve_task_models,
 )
 
 
@@ -530,3 +534,211 @@ class TestBuildPromptsToRun:
                     inputs={},
                 )
             )
+
+
+# ===================================================================
+# _resolve_task_models (multi-model resolution)
+# ===================================================================
+
+class TestResolveTaskModels:
+    """Tests for _resolve_task_models (pure fan-out over model entries)."""
+
+    def test_single_model_matches_resolve_task_model(self):
+        """A singular-model task yields one ResolvedModel equal to the legacy path."""
+        task = TaskDefinition(model="fast", model_settings={"temperature": 0.2})
+        resolved = _resolve_task_models(
+            task,
+            model_keys=["fast"],
+            model_dict={"fast": "gpt-4o-mini"},
+            models_params={"fast": {"temperature": 0.7}},
+        )
+        assert len(resolved) == 1
+        rm = resolved[0]
+        legacy = _resolve_task_model(
+            task, model_keys=["fast"], model_dict={"fast": "gpt-4o-mini"},
+            models_params={"fast": {"temperature": 0.7}},
+        )
+        assert (rm.model, rm.model_settings, rm.api_type, rm.endpoint, rm.token, rm.backend) == legacy
+        # Label falls back to the logical name the user wrote.
+        assert rm.label == "fast"
+
+    def test_default_model_label_when_empty(self):
+        """An empty model resolves to DEFAULT_MODEL and labels with it."""
+        from seclab_taskflow_agent.agent import DEFAULT_MODEL
+
+        resolved = _resolve_task_models(
+            TaskDefinition(user_prompt="hi"),
+            model_keys=[], model_dict={}, models_params={},
+        )
+        assert len(resolved) == 1
+        assert resolved[0].model == DEFAULT_MODEL
+        assert resolved[0].label == DEFAULT_MODEL
+
+    def test_fan_out_over_multiple_models(self):
+        """Each ``models`` entry resolves to its own ResolvedModel."""
+        task = TaskDefinition(user_prompt="hi", models=["fast", "smart"])
+        resolved = _resolve_task_models(
+            task,
+            model_keys=["fast", "smart"],
+            model_dict={"fast": "gpt-4o-mini", "smart": "gpt-4o"},
+            models_params={},
+        )
+        assert [rm.model for rm in resolved] == ["gpt-4o-mini", "gpt-4o"]
+        assert [rm.label for rm in resolved] == ["fast", "smart"]
+
+    def test_per_entry_settings_and_engine_keys(self):
+        """Per-entry model_settings override config and engine keys are extracted."""
+        task = TaskDefinition(
+            user_prompt="hi",
+            models=[
+                {"model": "fast", "model_settings": {"temperature": 0.1}},
+                {"model": "native", "model_settings": {"backend": "anthropic_sdk", "api_type": "messages"}},
+            ],
+        )
+        resolved = _resolve_task_models(
+            task,
+            model_keys=["fast", "native"],
+            model_dict={"fast": "gpt-4o-mini", "native": "claude-opus-4.7"},
+            models_params={"fast": {"temperature": 0.9, "top_p": 0.5}},
+        )
+        # entry-level temperature wins over config; config top_p preserved
+        assert resolved[0].model_settings == {"temperature": 0.1, "top_p": 0.5}
+        # engine keys are popped out of settings
+        assert resolved[1].backend == "anthropic_sdk"
+        assert resolved[1].api_type == "messages"
+        assert "backend" not in resolved[1].model_settings
+        assert "api_type" not in resolved[1].model_settings
+
+    def test_unknown_model_passes_through(self):
+        """A model name absent from model_keys passes through as the id."""
+        task = TaskDefinition(user_prompt="hi", models=["claude-3-opus"])
+        resolved = _resolve_task_models(
+            task, model_keys=["fast"], model_dict={"fast": "gpt-4o-mini"}, models_params={},
+        )
+        assert resolved[0].model == "claude-3-opus"
+        assert resolved[0].label == "claude-3-opus"
+
+
+# ===================================================================
+# _completion (task success reduction)
+# ===================================================================
+
+class TestCompletion:
+    """Tests for the completion-policy reducer."""
+
+    def test_empty_is_success(self):
+        assert _completion([], "all") is True
+        assert _completion([], "any") is True
+
+    def test_all_policy(self):
+        assert _completion([True, True], "all") is True
+        assert _completion([True, False], "all") is False
+
+    def test_any_policy(self):
+        assert _completion([False, True], "any") is True
+        assert _completion([False, False], "any") is False
+
+
+# ===================================================================
+# _fan_out_deploys (execution matrix + concurrency + completion)
+# ===================================================================
+
+def _rm(label: str) -> ResolvedModel:
+    return ResolvedModel(
+        model=label, model_settings={}, api_type="chat_completions",
+        endpoint=None, token=None, backend=None, label=label,
+    )
+
+
+class TestFanOutDeploys:
+    """Tests for the fan-out execution helper (no agent/MCP machinery)."""
+
+    def test_runs_every_prompt_model_pair(self):
+        """Deploy is invoked once for each (prompt, model) pair."""
+        calls: list[tuple[str, str]] = []
+
+        async def deploy(payload, rm):
+            calls.append((payload, rm.label))
+            return True
+
+        items = [(p, rm) for p in ("p1", "p2") for rm in (_rm("m1"), _rm("m2"))]
+        ok = asyncio.run(
+            _fan_out_deploys(items, deploy, concurrent=True, concurrency=4, completion_policy="all")
+        )
+        assert ok is True
+        assert set(calls) == {("p1", "m1"), ("p1", "m2"), ("p2", "m1"), ("p2", "m2")}
+
+    def test_empty_work_items_is_success(self):
+        async def deploy(payload, rm):  # pragma: no cover - never called
+            raise AssertionError("deploy should not be called")
+
+        ok = asyncio.run(
+            _fan_out_deploys([], deploy, concurrent=True, concurrency=2, completion_policy="all")
+        )
+        assert ok is True
+
+    def test_concurrency_bound_is_respected(self):
+        """No more than ``concurrency`` deploys run simultaneously."""
+        active = 0
+        peak = 0
+
+        async def deploy(payload, rm):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+            return True
+
+        items = [("p", _rm(f"m{i}")) for i in range(6)]
+        asyncio.run(
+            _fan_out_deploys(items, deploy, concurrent=True, concurrency=2, completion_policy="all")
+        )
+        assert peak <= 2
+
+    def test_sequential_path_preserves_order_and_propagates(self):
+        """Non-concurrent path runs in order and lets exceptions propagate."""
+        order: list[str] = []
+
+        async def deploy(payload, rm):
+            order.append(rm.label)
+            if rm.label == "boom":
+                raise RuntimeError("kaboom")
+            return True
+
+        items = [("p", _rm("a")), ("p", _rm("boom")), ("p", _rm("c"))]
+        with pytest.raises(RuntimeError, match="kaboom"):
+            asyncio.run(
+                _fan_out_deploys(items, deploy, concurrent=False, concurrency=1, completion_policy="all")
+            )
+        # Stopped at the failing branch; "c" never ran.
+        assert order == ["a", "boom"]
+
+    def test_concurrent_exceptions_counted_as_failure(self):
+        """In the concurrent path a raised branch becomes a failure, not a crash."""
+        async def deploy(payload, rm):
+            if rm.label == "bad":
+                raise RuntimeError("branch failed")
+            return True
+
+        items = [("p", _rm("good")), ("p", _rm("bad"))]
+        ok_all = asyncio.run(
+            _fan_out_deploys(items, deploy, concurrent=True, concurrency=2, completion_policy="all")
+        )
+        ok_any = asyncio.run(
+            _fan_out_deploys(items, deploy, concurrent=True, concurrency=2, completion_policy="any")
+        )
+        assert ok_all is False
+        assert ok_any is True
+
+    def test_completion_any_with_one_success(self):
+        async def deploy(payload, rm):
+            return rm.label == "winner"
+
+        items = [("p", _rm("loser")), ("p", _rm("winner"))]
+        assert asyncio.run(
+            _fan_out_deploys(items, deploy, concurrent=True, concurrency=2, completion_policy="any")
+        ) is True
+        assert asyncio.run(
+            _fan_out_deploys(items, deploy, concurrent=True, concurrency=2, completion_policy="all")
+        ) is False

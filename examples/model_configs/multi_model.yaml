@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# Example model_config for multi-model tasks: two logical models that a
+# single task can fan out across in parallel. Swap the provider IDs for
+# whatever your endpoint exposes.
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: model_config
+models:
+  gpt_fast: gpt-5.4-mini
+  gpt_alt: gpt-4.1
+model_settings:
+  gpt_fast:
+    api_type: responses

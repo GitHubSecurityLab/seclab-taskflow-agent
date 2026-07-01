@@ -20,14 +20,19 @@ render_logger.addHandler(file_handler)
 render_logger.propagate = False
 
 
-async def flush_async_output(task_id: str) -> None:
-    """Flush buffered async output for *task_id* to the console."""
+async def flush_async_output(task_id: str, label: str | None = None) -> None:
+    """Flush buffered async output for *task_id* to the console.
+
+    When *label* is provided it replaces the default ``async task: <id>``
+    heading, letting multi-model runs tag each block with its model name.
+    """
     async with async_output_lock:
         if task_id not in async_output:
             # No buffered output (agent may have failed before producing any).
             return
         data = async_output.pop(task_id)
-    await render_model_output(f"** 🤖✏️ Output for async task: {task_id}\n\n")
+    heading = label if label else f"async task: {task_id}"
+    await render_model_output(f"** 🤖✏️ Output for {heading}\n\n")
     await render_model_output(data)
 
 

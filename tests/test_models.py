@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from seclab_taskflow_agent.models import (
     ModelConfigDocument,
+    ModelEntry,
     PersonalityDocument,
     PromptDocument,
     ServerParams,
@@ -81,6 +82,93 @@ class TestTaskDefinition:
     def test_extra_fields_allowed(self):
         t = TaskDefinition(future_field="value")
         assert t.model_extra["future_field"] == "value"
+
+
+class TestMultiModel:
+    """Test the multi-model ``models:`` grammar on a task."""
+
+    def test_defaults_single_model(self):
+        """Absent ``models`` leaves a task single-model with default policy."""
+        t = TaskDefinition(user_prompt="hi")
+        assert t.models == []
+        assert t.completion == "all"
+        assert t.model_concurrency == 0
+        entries = t.effective_model_entries()
+        assert len(entries) == 1
+        assert entries[0].model == ""
+        assert entries[0].model_settings == {}
+
+    def test_singular_model_wrapped_in_entry(self):
+        """The singular ``model``/``model_settings`` pair maps to one entry."""
+        t = TaskDefinition(user_prompt="hi", model="fast", model_settings={"temperature": 0.5})
+        entries = t.effective_model_entries()
+        assert len(entries) == 1
+        assert entries[0].model == "fast"
+        assert entries[0].model_settings == {"temperature": 0.5}
+
+    def test_string_list_coerced_to_entries(self):
+        """A bare list of names coerces each into a ModelEntry."""
+        t = TaskDefinition(user_prompt="hi", models=["gpt_default", "claude_native"])
+        assert all(isinstance(e, ModelEntry) for e in t.models)
+        assert [e.model for e in t.effective_model_entries()] == ["gpt_default", "claude_native"]
+        assert all(e.model_settings == {} for e in t.effective_model_entries())
+
+    def test_rich_entries_preserve_settings(self):
+        """Per-entry ``model_settings`` maps are preserved."""
+        t = TaskDefinition(
+            user_prompt="hi",
+            models=[
+                {"model": "gpt_default", "model_settings": {"temperature": 0.2}},
+                {"model": "claude_native", "model_settings": {"reasoning": {"effort": "high"}}},
+            ],
+        )
+        entries = t.effective_model_entries()
+        assert entries[0].model == "gpt_default"
+        assert entries[0].model_settings == {"temperature": 0.2}
+        assert entries[1].model_settings == {"reasoning": {"effort": "high"}}
+
+    def test_mixed_string_and_map_entries(self):
+        """A list may mix bare names and override maps."""
+        t = TaskDefinition(
+            user_prompt="hi",
+            models=["gpt_default", {"model": "claude_native", "model_settings": {"temperature": 0.1}}],
+        )
+        entries = t.effective_model_entries()
+        assert entries[0].model == "gpt_default"
+        assert entries[0].model_settings == {}
+        assert entries[1].model == "claude_native"
+        assert entries[1].model_settings == {"temperature": 0.1}
+
+    def test_model_and_models_mutually_exclusive(self):
+        with pytest.raises(ValidationError, match="mutually exclusive"):
+            TaskDefinition(user_prompt="hi", model="fast", models=["a"])
+
+    def test_multi_model_with_repeat_prompt_rejected(self):
+        with pytest.raises(ValidationError, match="repeat_prompt"):
+            TaskDefinition(user_prompt="{{ result }}", repeat_prompt=True, models=["a", "b"])
+
+    def test_single_model_with_repeat_prompt_allowed(self):
+        """One-element ``models`` is fine with repeat_prompt (no fan-out)."""
+        t = TaskDefinition(user_prompt="{{ result }}", repeat_prompt=True, models=["only"])
+        assert len(t.effective_model_entries()) == 1
+
+    def test_completion_policy_validated(self):
+        with pytest.raises(ValidationError):
+            TaskDefinition(user_prompt="hi", models=["a", "b"], completion="quorum")
+        t = TaskDefinition(user_prompt="hi", models=["a", "b"], completion="any")
+        assert t.completion == "any"
+
+    def test_negative_model_concurrency_rejected(self):
+        with pytest.raises(ValidationError, match="model_concurrency"):
+            TaskDefinition(user_prompt="hi", models=["a", "b"], model_concurrency=-1)
+
+    def test_invalid_models_type_rejected(self):
+        with pytest.raises(ValidationError, match="must be a list"):
+            TaskDefinition(user_prompt="hi", models="gpt_default")
+
+    def test_invalid_models_entry_rejected(self):
+        with pytest.raises(ValidationError, match="invalid 'models' entry"):
+            TaskDefinition(user_prompt="hi", models=[123])
 
 
 class TestTaskflowDocument:

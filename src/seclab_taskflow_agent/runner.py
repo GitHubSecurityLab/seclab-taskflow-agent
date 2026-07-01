@@ -23,6 +23,8 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import jinja2
@@ -120,23 +122,24 @@ def _merge_reusable_task(
     return TaskDefinition.model_validate(merged)
 
 
-def _resolve_task_model(
-    task: TaskDefinition,
+def _resolve_one_model(
+    logical_name: str,
+    task_model_settings: dict[str, Any],
     model_keys: list[str],
     model_dict: dict[str, str],
     models_params: dict[str, dict[str, Any]],
     default_api_type: str = "chat_completions",
 ) -> tuple[str, dict[str, Any], str, str | None, str | None, str | None]:
-    """Resolve the final model name, settings, and per-model overrides.
+    """Resolve one logical model name plus overrides into a concrete spec.
+
+    Shared core for both the singular ``model:`` field and each entry of the
+    multi-model ``models:`` list. *task_model_settings* are the per-task (or
+    per-entry) overrides that win over the ``model_config`` settings.
 
     Returns:
         A tuple of ``(model_id, model_settings, api_type, endpoint, token, backend)``
         where *endpoint*, *token*, and *backend* are ``None`` when not overridden.
-
-    Raises:
-        ValueError: If task-level model_settings is not a dictionary.
     """
-    logical_name: str = task.model or DEFAULT_MODEL
     model_settings: dict[str, Any] = {}
     api_type: str = default_api_type
     endpoint: str | None = None
@@ -154,11 +157,7 @@ def _resolve_task_model(
     token = model_settings.pop("token", None)
     backend = model_settings.pop("backend", None)
 
-    task_model_settings: dict[str, Any] | Any = task.model_settings or {}
-    if not isinstance(task_model_settings, dict):
-        raise ValueError(f"model_settings in task {task.name or ''} needs to be a dictionary")
-
-    # Task-level overrides can also set engine keys
+    # Task/entry-level overrides can also set engine keys
     task_settings = dict(task_model_settings)
     api_type = task_settings.pop("api_type", api_type)
     endpoint = task_settings.pop("endpoint", endpoint)
@@ -167,6 +166,167 @@ def _resolve_task_model(
 
     model_settings.update(task_settings)
     return logical_name, model_settings, api_type, endpoint, token, backend
+
+
+def _resolve_task_model(
+    task: TaskDefinition,
+    model_keys: list[str],
+    model_dict: dict[str, str],
+    models_params: dict[str, dict[str, Any]],
+    default_api_type: str = "chat_completions",
+) -> tuple[str, dict[str, Any], str, str | None, str | None, str | None]:
+    """Resolve the final model name, settings, and per-model overrides.
+
+    Returns:
+        A tuple of ``(model_id, model_settings, api_type, endpoint, token, backend)``
+        where *endpoint*, *token*, and *backend* are ``None`` when not overridden.
+
+    Raises:
+        ValueError: If task-level model_settings is not a dictionary.
+    """
+    task_model_settings: dict[str, Any] | Any = task.model_settings or {}
+    if not isinstance(task_model_settings, dict):
+        raise ValueError(f"model_settings in task {task.name or ''} needs to be a dictionary")
+    return _resolve_one_model(
+        task.model or DEFAULT_MODEL,
+        task_model_settings,
+        model_keys,
+        model_dict,
+        models_params,
+        default_api_type,
+    )
+
+
+@dataclass(frozen=True)
+class ResolvedModel:
+    """A fully resolved model spec for one branch of a (multi-)model task."""
+
+    model: str
+    model_settings: dict[str, Any]
+    api_type: str
+    endpoint: str | None
+    token: str | None
+    backend: str | None
+    label: str
+
+
+def _resolve_task_models(
+    task: TaskDefinition,
+    model_keys: list[str],
+    model_dict: dict[str, str],
+    models_params: dict[str, dict[str, Any]],
+    default_api_type: str = "chat_completions",
+) -> list[ResolvedModel]:
+    """Resolve every model this task runs against.
+
+    Single-model tasks yield a one-element list (equivalent to
+    :func:`_resolve_task_model`); multi-model tasks yield one
+    :class:`ResolvedModel` per ``models`` entry. The ``label`` is the
+    user-facing logical name (falling back to the resolved provider id) and
+    is used to tag per-model output streams.
+    """
+    resolved: list[ResolvedModel] = []
+    for entry in task.effective_model_entries():
+        entry_settings: dict[str, Any] | Any = entry.model_settings or {}
+        if not isinstance(entry_settings, dict):
+            raise ValueError(f"model_settings in task {task.name or ''} needs to be a dictionary")
+        model_id, settings, api_type, endpoint, token, backend = _resolve_one_model(
+            entry.model or DEFAULT_MODEL,
+            entry_settings,
+            model_keys,
+            model_dict,
+            models_params,
+            default_api_type,
+        )
+        resolved.append(
+            ResolvedModel(
+                model=model_id,
+                model_settings=settings,
+                api_type=api_type,
+                endpoint=endpoint,
+                token=token,
+                backend=backend,
+                label=entry.model or model_id,
+            )
+        )
+    return resolved
+
+
+def _completion(oks: list[bool], policy: str) -> bool:
+    """Reduce per-branch success flags to a single task result.
+
+    An empty branch list is treated as success (nothing ran, nothing
+    failed), matching the pre-multi-model behaviour. ``"any"`` succeeds if
+    at least one branch succeeded; ``"all"`` (the default) requires every
+    branch to succeed.
+    """
+    if not oks:
+        return True
+    if policy == "any":
+        return any(oks)
+    return all(oks)
+
+
+async def _fan_out_deploys(
+    work_items: list[tuple[Any, ResolvedModel]],
+    deploy: Callable[[Any, ResolvedModel], Awaitable[bool]],
+    *,
+    concurrent: bool,
+    concurrency: int,
+    completion_policy: str,
+) -> bool:
+    """Run ``deploy`` for every ``(payload, model)`` work item.
+
+    This is the single place that owns the task fan-out matrix (prompts x
+    models), the concurrency bound, exception isolation, and the completion
+    policy, so the behaviour is unit-testable independently of the agent and
+    MCP machinery.
+
+    Args:
+        work_items: ``(payload, resolved_model)`` pairs to execute. The
+            payload is opaque to this helper and handed back to ``deploy``.
+        deploy: coroutine factory invoked as ``deploy(payload, model)``,
+            returning ``True`` on success.
+        concurrent: when True all deploys run under a bounded ``gather`` and
+            per-branch exceptions are captured and counted as failures; when
+            False they run sequentially and exceptions propagate to the
+            caller's retry loop (preserving the legacy single-model path).
+        concurrency: maximum simultaneous deploys (clamped to >= 1) when
+            ``concurrent`` is True.
+        completion_policy: ``"all"`` or ``"any"`` (see :func:`_completion`).
+
+    Returns:
+        The reduced task success flag.
+    """
+    if not work_items:
+        return True
+
+    if not concurrent:
+        # Sequential path: exceptions propagate exactly as the pre-multi-model
+        # single-model path did, so the caller's retry loop still sees
+        # transient backend errors.
+        oks: list[bool] = []
+        for payload, model in work_items:
+            oks.append(await deploy(payload, model))
+        return _completion(oks, completion_policy)
+
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+
+    async def _guarded(payload: Any, model: ResolvedModel) -> bool:
+        async with semaphore:
+            return await deploy(payload, model)
+
+    gathered = await asyncio.gather(
+        *(_guarded(payload, model) for payload, model in work_items),
+        return_exceptions=True,
+    )
+    reduced: list[bool] = []
+    for result in gathered:
+        if not isinstance(result, bool):
+            logging.error("Caught exception in Gather: %s", result, exc_info=result)
+            result = False
+        reduced.append(result)
+    return _completion(reduced, completion_policy)
 
 
 async def _build_prompts_to_run(
@@ -267,6 +427,7 @@ async def deploy_task_agents(
     backend: str | None = None,
     run_hooks: TaskRunHooks | None = None,
     agent_hooks: TaskAgentHooks | None = None,
+    stream_label: str | None = None,
 ) -> bool:
     """Deploy and run task agents with MCP servers.
 
@@ -280,6 +441,9 @@ async def deploy_task_agents(
         backend: Optional explicit SDK adapter name (``"openai_agents"`` or
             ``"copilot_sdk"``). Defaults to ``SECLAB_TASKFLOW_BACKEND`` or
             an endpoint-based auto-default.
+        stream_label: Optional human-readable label for this run's buffered
+            output block (used to tag per-model streams in multi-model tasks).
+            Only takes effect when ``async_task`` is True.
 
     Returns:
         True if the task completed successfully.
@@ -444,7 +608,7 @@ async def deploy_task_agents(
             logging.exception("API Timeout")
 
         if async_task:
-            await flush_async_output(task_id)
+            await flush_async_output(task_id, label=stream_label)
 
         return complete
 
@@ -603,10 +767,12 @@ async def run_main(
             if task.uses:
                 task = _merge_reusable_task(available_tools, task)
 
-            # Resolve model (name, settings, api_type, optional endpoint/token/backend)
-            model, model_settings, task_api_type, task_endpoint, task_token, task_backend = _resolve_task_model(
+            # Resolve models (one per model entry; single-model tasks yield
+            # a one-element list). Multi-model tasks fan out over this list.
+            resolved_models = _resolve_task_models(
                 task, model_keys, model_dict, models_params, default_api_type=api_type,
             )
+            multi_model = len(resolved_models) > 1
 
             # Read task fields via typed attributes
             agents_list = task.agents or []
@@ -625,6 +791,9 @@ async def run_main(
             exclude_from_context = task.exclude_from_context
             async_task = task.async_task
             max_concurrent_tasks = task.async_limit
+            completion_policy = task.completion
+            # Bound on concurrent model runs (0 == run all models at once).
+            model_concurrency = task.model_concurrency or len(resolved_models)
 
             # Render prompt template (skip if repeat_prompt — result not yet available)
             if task_prompt and not repeat_prompt:
@@ -657,9 +826,16 @@ async def run_main(
                             logging.exception("Shell task error")
                             return False
 
-                    tasks: list[Any] = []
-                    task_results: list[Any] = []
-                    semaphore = asyncio.Semaphore(max_concurrent_tasks)
+                    # Concurrency: repeat_prompt async fans out over prompts;
+                    # multi-model fans out over models. Either triggers the
+                    # buffered/gathered path so per-branch output stays intact.
+                    concurrent = async_task or multi_model
+                    concurrency = model_concurrency if multi_model else max_concurrent_tasks
+
+                    # Resolve agents (and rewrite bare prompts) once per prompt,
+                    # before fanning out across models so the work is not
+                    # repeated per model.
+                    resolved_prompts: list[tuple[dict[str, Any], str]] = []
                     for p_prompt in prompts_to_run:
                         resolved_agents: dict[str, Any] = {}
                         current_agents = list(agents_list)
@@ -679,49 +855,59 @@ async def run_main(
                                 "No agents resolved for this task. "
                                 "Specify a personality with -p or provide an agents list."
                             )
+                        resolved_prompts.append((resolved_agents, p_prompt))
 
-                        async def _deploy(ra: dict, pp: str) -> bool:
-                            async with semaphore:
-                                return await deploy_task_agents(
-                                    available_tools,
-                                    ra,
-                                    pp,
-                                    async_task=async_task,
-                                    toolboxes_override=toolboxes_override,
-                                    blocked_tools=blocked_tools,
-                                    headless=headless,
-                                    exclude_from_context=exclude_from_context,
-                                    max_turns=max_turns,
-                                    run_hooks=TaskRunHooks(
-                                        on_tool_end=on_tool_end_hook, on_tool_start=on_tool_start_hook
-                                    ),
-                                    model=model,
-                                    model_par=model_settings,
-                                    api_type=task_api_type,
-                                    endpoint=task_endpoint,
-                                    token=task_token,
-                                    backend=task_backend or backend,
-                                    agent_hooks=TaskAgentHooks(on_handoff=on_handoff_hook),
-                                )
-
-                        task_coroutine = _deploy(resolved_agents, p_prompt)
-
-                        if not async_task:
-                            result = await task_coroutine
-                            task_results.append(result)
+                    async def _deploy(payload: tuple[dict[str, Any], str], rm: ResolvedModel) -> bool:
+                        ra, pp = payload
+                        # Isolate multi-model tool-result capture: concurrent
+                        # models must not interleave into the shared
+                        # last_mcp_tool_results (which feeds downstream
+                        # repeat_prompt / session checkpoints). Single-model
+                        # runs keep the shared sink for backwards compatibility.
+                        if multi_model:
+                            async def _isolated_tool_end(context, agent, tool, result) -> None:  # noqa: ANN001
+                                watchdog_ping()
+                            run_hooks = TaskRunHooks(
+                                on_tool_end=_isolated_tool_end, on_tool_start=on_tool_start_hook
+                            )
                         else:
-                            tasks.append(task_coroutine)
+                            run_hooks = TaskRunHooks(
+                                on_tool_end=on_tool_end_hook, on_tool_start=on_tool_start_hook
+                            )
+                        return await deploy_task_agents(
+                            available_tools,
+                            ra,
+                            pp,
+                            async_task=concurrent,
+                            toolboxes_override=toolboxes_override,
+                            blocked_tools=blocked_tools,
+                            headless=headless,
+                            exclude_from_context=exclude_from_context,
+                            max_turns=max_turns,
+                            run_hooks=run_hooks,
+                            model=rm.model,
+                            model_par=rm.model_settings,
+                            api_type=rm.api_type,
+                            endpoint=rm.endpoint,
+                            token=rm.token,
+                            backend=rm.backend or backend,
+                            agent_hooks=TaskAgentHooks(on_handoff=on_handoff_hook),
+                            stream_label=rm.label if multi_model else None,
+                        )
 
-                    if async_task:
-                        task_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                    complete = True
-                    for result in task_results:
-                        if not isinstance(result, bool):
-                            logging.error("Caught exception in Gather: %s", result, exc_info=result)
-                            result = False
-                        complete = result and complete
-                    return complete
+                    # Fan-out matrix: every (prompt, model) pair.
+                    work_items = [
+                        (payload, rm)
+                        for payload in resolved_prompts
+                        for rm in resolved_models
+                    ]
+                    return await _fan_out_deploys(
+                        work_items,
+                        _deploy,
+                        concurrent=concurrent,
+                        concurrency=concurrency,
+                        completion_policy=completion_policy,
+                    )
 
                 # Execute the task with auto-retry on transient failures.
                 # Only retry on network/API errors — deterministic failures

@@ -13,8 +13,10 @@ from __future__ import annotations
 __all__ = [
     "ApiType",
     "BackendSdk",
+    "CompletionPolicy",
     "DOCUMENT_MODELS",
     "ModelConfigDocument",
+    "ModelEntry",
     "PersonalityDocument",
     "PromptDocument",
     "SUPPORTED_VERSION",
@@ -35,6 +37,10 @@ ApiType = Literal["chat_completions", "responses", "messages"]
 
 # Valid backend names. Must stay in sync with ``sdk._KNOWN``.
 BackendSdk = Literal["openai_agents", "copilot_sdk", "anthropic_sdk"]
+
+# Completion policy for multi-model tasks: whether all models must succeed
+# for the task to be considered complete, or any single success suffices.
+CompletionPolicy = Literal["all", "any"]
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +82,22 @@ class TaskflowHeader(BaseModel):
 # Task definition (a single step inside a taskflow)
 # ---------------------------------------------------------------------------
 
+class ModelEntry(BaseModel):
+    """A single model entry for multi-model task execution.
+
+    Accepts either a bare logical model name (coerced to ``model=<name>``)
+    or a mapping with ``model`` and optional ``model_settings``. Logical
+    names are resolved through the taskflow's ``model_config`` exactly like
+    the singular ``model:`` field, so per-entry ``api_type``/``endpoint``/
+    ``token``/``backend`` overrides work the same way.
+    """
+
+    model_config = ConfigDict(extra="allow", protected_namespaces=())
+
+    model: str = ""
+    model_settings: dict[str, Any] = Field(default_factory=dict)
+
+
 class TaskDefinition(BaseModel):
     """A single task within a taskflow.
 
@@ -92,6 +114,14 @@ class TaskDefinition(BaseModel):
     run: str = ""
     model: str = ""
     model_settings: dict[str, Any] = Field(default_factory=dict)
+    # Multi-model fan-out: run this task against each listed model in
+    # parallel with per-model output streams. Mutually exclusive with the
+    # singular ``model`` field. Empty means single-model (see ``model``).
+    models: list[ModelEntry] = Field(default_factory=list)
+    # Completion policy when ``models`` lists more than one model.
+    completion: CompletionPolicy = "all"
+    # Upper bound on concurrent model runs (0 = run all models at once).
+    model_concurrency: int = 0
     must_complete: bool = False
     headless: bool = False
     repeat_prompt: bool = False
@@ -107,11 +137,64 @@ class TaskDefinition(BaseModel):
     async_task: bool = Field(default=False, alias="async")
     async_limit: int = 5
 
+    @field_validator("models", mode="before")
+    @classmethod
+    def _coerce_models(cls, v: Any) -> list[Any]:
+        """Coerce list items into ``ModelEntry`` maps.
+
+        Accepts a list whose entries are either bare model-name strings
+        (``[gpt_default, claude_native]``) or ``{model, model_settings}``
+        maps. Strings become ``{"model": <name>}``; maps and ``ModelEntry``
+        instances pass through for ``ModelEntry`` to validate.
+        """
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            raise ValueError(
+                "'models' must be a list of model names or {model, model_settings} maps"
+            )
+        out: list[Any] = []
+        for item in v:
+            if isinstance(item, str):
+                out.append({"model": item})
+            elif isinstance(item, (dict, ModelEntry)):
+                out.append(item)
+            else:
+                raise ValueError(f"invalid 'models' entry: {item!r}")
+        return out
+
     @model_validator(mode="after")
     def _run_xor_prompt(self) -> TaskDefinition:
         if self.run and self.user_prompt:
             raise ValueError("shell task ('run') and prompt task ('user_prompt') are mutually exclusive")
         return self
+
+    @model_validator(mode="after")
+    def _validate_models(self) -> TaskDefinition:
+        if self.models and self.model:
+            raise ValueError(
+                "'model' and 'models' are mutually exclusive; use 'model' for a single "
+                "model or 'models' for multi-model fan-out"
+            )
+        if len(self.models) > 1 and self.repeat_prompt:
+            raise ValueError(
+                "multi-model 'models' is not yet supported together with 'repeat_prompt' "
+                "(planned as a later milestone); use a single model with repeat_prompt"
+            )
+        if self.model_concurrency < 0:
+            raise ValueError("'model_concurrency' must be >= 0")
+        return self
+
+    def effective_model_entries(self) -> list[ModelEntry]:
+        """Return the normalised list of models this task runs against.
+
+        When ``models`` is set it is returned as-is. Otherwise the singular
+        ``model``/``model_settings`` pair is wrapped in a one-element list so
+        callers can treat single-model and multi-model tasks uniformly.
+        """
+        if self.models:
+            return list(self.models)
+        return [ModelEntry(model=self.model, model_settings=dict(self.model_settings))]
 
 
 class TaskWrapper(BaseModel):

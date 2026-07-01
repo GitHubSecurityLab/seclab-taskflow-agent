@@ -103,6 +103,77 @@ Parameters to the model can also be specified in the task using the `model_setti
 
 If `model_settings` is absent, then the model parameters will fall back to either the default or the ones supplied in a `model_config`. However, any parameters supplied in the task will override those that are set in the `model_config`.
 
+### Multiple Models (multi-model tasks)
+
+A task can be run against several models at once using the `models` field. Each
+model runs the task in parallel and its output is streamed as its own labelled
+block, which makes it easy to compare how different models respond to the same
+prompt (for example when evaluating an audit prompt across model families).
+
+The simplest form is a list of logical model names (resolved through the
+`model_config` exactly like the singular `model` field):
+
+```yaml
+  - task:
+      models: [gpt_default, claude_native, gpt_responses]
+      agents:
+        - seclab_taskflow_agent.personalities.c_auditer
+      user_prompt: |
+        Audit this function for memory safety issues.
+```
+
+Each entry may also be a map with its own `model_settings`, so different models
+can use different parameters in the same task:
+
+```yaml
+  - task:
+      models:
+        - model: gpt_default
+          model_settings:
+            temperature: 0.2
+        - model: claude_native
+          model_settings:
+            reasoning:
+              effort: high
+      agents:
+        - seclab_taskflow_agent.personalities.c_auditer
+      user_prompt: |
+        Audit this function for memory safety issues.
+```
+
+Notes and semantics:
+
+- `model` (singular) and `models` (plural) are mutually exclusive. `model: x`
+  is exactly equivalent to `models: [x]`; existing single-model taskflows are
+  unaffected.
+- Per-entry `model_settings` support the same engine keys as `model_config`
+  (`api_type`, `endpoint`, `token`, `backend`), so different models may run on
+  different backends within one task.
+- `completion` controls when a multi-model task counts as complete: `all`
+  (default, every model must succeed) or `any` (one success suffices). This is
+  what `must_complete` checks against.
+- `model_concurrency` caps how many models run at once (default `0` runs them
+  all in parallel):
+
+```yaml
+  - task:
+      models: [m1, m2, m3, m4]
+      model_concurrency: 2
+      completion: any
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        ...
+```
+
+- Multi-model output is buffered per model and flushed as a labelled block when
+  each model finishes, so streams from different models do not interleave.
+- Multi-model tasks are for parallel evaluation: their tool results are not
+  threaded into the `repeat_prompt` result channel, and combining `models`
+  (with more than one entry) with `repeat_prompt` on the same task is not yet
+  supported. Typed named outputs for consuming multi-model results downstream
+  are planned in a later milestone.
+
 ### Completion Requirement
 
 Tasks can be marked as requiring completion, if a required task fails, the taskflow will abort. This defaults to false.
