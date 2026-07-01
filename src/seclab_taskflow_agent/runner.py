@@ -37,7 +37,7 @@ from .mcp_lifecycle import MCP_CLEANUP_TIMEOUT, build_mcp_servers, mcp_session_t
 from .mcp_prompt import mcp_system_prompt
 from .mcp_utils import compress_name, mcp_client_params
 from .models import ModelConfigDocument, PersonalityDocument, TaskDefinition
-from .render_utils import flush_async_output, render_model_output
+from .render_utils import OutputRouter, flush_async_output, render_model_output, use_output_router
 from .results import ResultStore, ToolResult, decode_tool_result, normalize_openai_tool_output
 from .output_schema import validate_output
 from .sdk import AgentSpec, MCPServerSpec, get_backend, resolve_backend_name
@@ -741,6 +741,10 @@ async def run_main(
     # making progress for any reason the asyncio-layer timeouts didn't
     # already handle. Idempotent — safe to call on every run_main.
     start_watchdog()
+
+    # Give this run its own output router so buffered async / multi-model
+    # streams stay isolated from any other run sharing the process.
+    use_output_router(OutputRouter())
 
     store = ResultStore()
 

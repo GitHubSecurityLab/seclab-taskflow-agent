@@ -5,8 +5,21 @@
 
 import asyncio
 
-from seclab_taskflow_agent import render_utils
-from seclab_taskflow_agent.render_utils import flush_async_output, render_model_output
+import pytest
+
+from seclab_taskflow_agent.render_utils import (
+    OutputRouter,
+    flush_async_output,
+    get_output_router,
+    render_model_output,
+    use_output_router,
+)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_router():
+    """Give each test an isolated output router (no cross-test buffer leaks)."""
+    use_output_router(OutputRouter())
 
 
 def _capture(monkeypatch) -> list[str]:
@@ -72,4 +85,4 @@ class TestFlushAsyncOutput:
         assert "A-out" in joined
         assert "B-out" in joined
         # Both buffers fully drained.
-        assert render_utils.async_output == {}
+        assert get_output_router().buffers == {}
