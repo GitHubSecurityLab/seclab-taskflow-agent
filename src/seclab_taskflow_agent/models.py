@@ -184,11 +184,6 @@ class TaskDefinition(BaseModel):
                 "'model' and 'models' are mutually exclusive; use 'model' for a single "
                 "model or 'models' for multi-model fan-out"
             )
-        if len(self.models) > 1 and self.repeat_prompt:
-            raise ValueError(
-                "multi-model 'models' is not yet supported together with 'repeat_prompt' "
-                "(planned as a later milestone); use a single model with repeat_prompt"
-            )
         if self.model_concurrency < 0:
             raise ValueError("'model_concurrency' must be >= 0")
         return self
@@ -204,13 +199,13 @@ class TaskDefinition(BaseModel):
                 build_output_model(f"{self.id or self.name or 'task'}_output", self.outputs)
             except OutputSchemaError as exc:
                 raise ValueError(f"invalid 'outputs' schema: {exc}") from exc
+            if len(self.models) > 1:
+                raise ValueError(
+                    "'outputs' schema is not yet supported on multi-model tasks; "
+                    "use 'id' to fan-in per-model results as a list"
+                )
         if self.over and not self.repeat_prompt:
             raise ValueError("'over' only applies to repeat_prompt tasks")
-        if len(self.models) > 1 and (self.id or self.outputs or self.over):
-            raise ValueError(
-                "typed outputs ('id'/'outputs'/'over') are not yet supported on multi-model "
-                "tasks (planned as a later milestone)"
-            )
         return self
 
     def effective_model_entries(self) -> list[ModelEntry]:

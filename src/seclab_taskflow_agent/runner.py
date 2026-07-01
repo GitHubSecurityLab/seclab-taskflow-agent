@@ -23,7 +23,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import jinja2
@@ -209,6 +209,44 @@ class ResolvedModel:
     token: str | None
     backend: str | None
     label: str
+
+
+@dataclass
+class _Branch:
+    """One (prompt, model) cell of a task's execution matrix.
+
+    Multi-model branches capture their tool results into a private ``sink``
+    (never the shared store) so concurrent branches stay isolated and their
+    final results can be aggregated for fan-in.
+    """
+
+    agents: dict[str, Any]
+    prompt: str
+    rm: ResolvedModel
+    item_index: int
+    label: str
+    sink: list[ToolResult] = field(default_factory=list)
+
+
+def _aggregate_fanin(branches: list[_Branch]) -> list[dict[str, Any]]:
+    """Aggregate each branch's final tool result into fan-in records.
+
+    Produces one record per branch: ``{"model": <label>, "item": <index>,
+    "result": <value>}``. ``result`` is the decoded final tool result of the
+    branch (its raw text when not JSON, or ``None`` when the branch produced no
+    tool result). Used to expose multi-model / cross-product outputs to later
+    tasks as ``outputs.<id>``.
+    """
+    records: list[dict[str, Any]] = []
+    for branch in branches:
+        value: Any = None
+        if branch.sink:
+            try:
+                value = decode_tool_result(branch.sink[-1])
+            except ValueError:
+                value = branch.sink[-1].text
+        records.append({"model": branch.rm.label, "item": branch.item_index, "result": value})
+    return records
 
 
 def _resolve_task_models(
@@ -910,12 +948,6 @@ async def run_main(
                             logging.exception("Shell task error")
                             return False
 
-                    # Concurrency: repeat_prompt async fans out over prompts;
-                    # multi-model fans out over models. Either triggers the
-                    # buffered/gathered path so per-branch output stays intact.
-                    concurrent = async_task or multi_model
-                    concurrency = model_concurrency if multi_model else max_concurrent_tasks
-
                     # Resolve agents (and rewrite bare prompts) once per prompt,
                     # before fanning out across models so the work is not
                     # repeated per model.
@@ -941,20 +973,52 @@ async def run_main(
                             )
                         resolved_prompts.append((resolved_agents, p_prompt))
 
-                    async def _deploy(payload: tuple[dict[str, Any], str], rm: ResolvedModel) -> bool:
-                        ra, pp = payload
-                        # Isolate multi-model tool-result capture: concurrent
-                        # models must not interleave into the shared result
-                        # store (which feeds downstream repeat_prompt / typed
-                        # outputs / session checkpoints). Single-model runs keep
-                        # the shared sink for backwards compatibility.
-                        if multi_model:
-                            async def _isolated_tool_end(context, agent, tool, result) -> None:  # noqa: ANN001
-                                watchdog_ping()
-                            run_hooks = TaskRunHooks(
-                                on_tool_end=_isolated_tool_end, on_tool_start=on_tool_start_hook
+                    # Execution matrix: prompts x models. ``cross`` is a true
+                    # multi-model x repeat_prompt fan-out (more than one prompt
+                    # AND more than one model).
+                    cross = multi_model and len(resolved_prompts) > 1
+                    branches: list[_Branch] = []
+                    for item_index, (ra, pp) in enumerate(resolved_prompts):
+                        for rm in resolved_models:
+                            label = rm.label
+                            if cross:
+                                label = f"{rm.label} [item {item_index}]"
+                            branches.append(
+                                _Branch(agents=ra, prompt=pp, rm=rm, item_index=item_index, label=label)
                             )
-                            branch_record = None
+
+                    # Concurrency: repeat_prompt async fans out over prompts;
+                    # multi-model fans out over models; the cross product is
+                    # bounded by model_concurrency * async_limit.
+                    concurrent = async_task or multi_model
+                    if cross:
+                        concurrency = model_concurrency * max_concurrent_tasks
+                    elif multi_model:
+                        concurrency = model_concurrency
+                    else:
+                        concurrency = max_concurrent_tasks
+
+                    async def _deploy(branch: _Branch, rm: ResolvedModel) -> bool:
+                        # Multi-model branches capture tool results into their
+                        # own private sink (never the shared store), keeping
+                        # concurrent branches isolated and enabling fan-in.
+                        # Single-model runs keep the shared sink for backwards
+                        # compatibility.
+                        if multi_model:
+                            async def _branch_tool_end(context, agent, tool, result) -> None:  # noqa: ANN001
+                                watchdog_ping()
+                                branch.sink.append(
+                                    normalize_openai_tool_output(result, tool_name=getattr(tool, "name", ""))
+                                )
+
+                            async def _branch_record(tr: ToolResult) -> None:
+                                watchdog_ping()
+                                branch.sink.append(tr)
+
+                            run_hooks = TaskRunHooks(
+                                on_tool_end=_branch_tool_end, on_tool_start=on_tool_start_hook
+                            )
+                            branch_record = _branch_record
                         else:
                             run_hooks = TaskRunHooks(
                                 on_tool_end=on_tool_end_hook, on_tool_start=on_tool_start_hook
@@ -962,8 +1026,8 @@ async def run_main(
                             branch_record = record_tool_result
                         return await deploy_task_agents(
                             available_tools,
-                            ra,
-                            pp,
+                            branch.agents,
+                            branch.prompt,
                             async_task=concurrent,
                             toolboxes_override=toolboxes_override,
                             blocked_tools=blocked_tools,
@@ -979,22 +1043,25 @@ async def run_main(
                             token=rm.token,
                             backend=rm.backend or backend,
                             agent_hooks=TaskAgentHooks(on_handoff=on_handoff_hook),
-                            stream_label=rm.label if multi_model else None,
+                            stream_label=branch.label if multi_model else None,
                         )
 
-                    # Fan-out matrix: every (prompt, model) pair.
-                    work_items = [
-                        (payload, rm)
-                        for payload in resolved_prompts
-                        for rm in resolved_models
-                    ]
-                    return await _fan_out_deploys(
+                    work_items = [(branch, branch.rm) for branch in branches]
+                    complete = await _fan_out_deploys(
                         work_items,
                         _deploy,
                         concurrent=concurrent,
                         concurrency=concurrency,
                         completion_policy=completion_policy,
                     )
+
+                    # Fan-in: expose each branch's final result as a named list
+                    # for downstream tasks (multi-model / cross-product only;
+                    # single-model typed-output capture happens in run_main).
+                    if multi_model and task_output_id:
+                        store.set_output(task_output_id, _aggregate_fanin(branches))
+
+                    return complete
 
                 # Execute the task with auto-retry on transient failures.
                 # Only retry on network/API errors — deterministic failures

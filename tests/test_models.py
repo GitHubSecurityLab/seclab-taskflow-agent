@@ -143,9 +143,10 @@ class TestMultiModel:
         with pytest.raises(ValidationError, match="mutually exclusive"):
             TaskDefinition(user_prompt="hi", model="fast", models=["a"])
 
-    def test_multi_model_with_repeat_prompt_rejected(self):
-        with pytest.raises(ValidationError, match="repeat_prompt"):
-            TaskDefinition(user_prompt="{{ result }}", repeat_prompt=True, models=["a", "b"])
+    def test_multi_model_with_repeat_prompt_allowed(self):
+        """Multi-model + repeat_prompt is a supported cross product."""
+        t = TaskDefinition(user_prompt="{{ result }}", repeat_prompt=True, models=["a", "b"])
+        assert len(t.effective_model_entries()) == 2
 
     def test_single_model_with_repeat_prompt_allowed(self):
         """One-element ``models`` is fine with repeat_prompt (no fan-out)."""
@@ -201,9 +202,19 @@ class TestTypedOutputs:
         t = TaskDefinition(user_prompt="{{ result }}", repeat_prompt=True, over="outputs.x.items")
         assert t.over == "outputs.x.items"
 
-    def test_typed_outputs_rejected_on_multi_model(self):
-        with pytest.raises(ValidationError, match="not yet supported on multi-model"):
-            TaskDefinition(id="x", user_prompt="hi", models=["a", "b"])
+    def test_id_allowed_on_multi_model_for_fanin(self):
+        """`id` on a multi-model task is allowed (enables fan-in)."""
+        t = TaskDefinition(id="cmp", user_prompt="hi", models=["a", "b"])
+        assert t.id == "cmp"
+
+    def test_over_allowed_on_multi_model_repeat(self):
+        """`over` (iterable selector) is allowed on a multi-model repeat task."""
+        t = TaskDefinition(
+            user_prompt="{{ result }}", repeat_prompt=True, models=["a", "b"], over="outputs.x.items"
+        )
+        assert t.over == "outputs.x.items"
+
+    def test_outputs_schema_rejected_on_multi_model(self):
         with pytest.raises(ValidationError, match="not yet supported on multi-model"):
             TaskDefinition(user_prompt="hi", models=["a", "b"], outputs={"f": "str"})
 

@@ -168,11 +168,17 @@ Notes and semantics:
 
 - Multi-model output is buffered per model and flushed as a labelled block when
   each model finishes, so streams from different models do not interleave.
-- Multi-model tasks are for parallel evaluation: their tool results are not
-  threaded into the `repeat_prompt` result channel, and combining `models`
-  (with more than one entry) with `repeat_prompt` on the same task is not yet
-  supported. Typed named outputs for consuming multi-model results downstream
-  are planned in a later milestone.
+- `models` can be combined with `repeat_prompt`: the task runs the cross
+  product of items x models concurrently, bounded by
+  `model_concurrency * async_limit`. Each branch is streamed as its own block
+  labelled `<model> [item <n>]`.
+- Multi-model tool results are not threaded into the implicit last-tool-result
+  channel that the next task's `repeat_prompt` reads (that stays deterministic).
+  To consume multi-model results downstream, give the task an `id`: each
+  branch's final result is aggregated into `outputs.<id>` as a list of records
+  `{"model": ..., "item": ..., "result": ...}` (see "Typed named outputs").
+- The inline `outputs` schema is not yet supported on multi-model tasks (the
+  aggregate is a list of records); use `id` for fan-in.
 
 ### Completion Requirement
 
@@ -390,8 +396,9 @@ Notes:
   `values`, ...) resolve to your data, not the method.
 - Without `id`/`outputs`/`over`, the implicit last-tool-result `repeat_prompt`
   behaviour is unchanged.
-- Typed outputs are not yet supported on multi-model tasks (planned in a later
-  milestone).
+- On multi-model tasks, `id` fans in per-branch results as a list of
+  `{model, item, result}` records (see "Multiple Models"); the inline `outputs`
+  schema is not yet supported there.
 
 ### Toolboxes / MCP Servers
 

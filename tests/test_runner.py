@@ -22,7 +22,9 @@ from seclab_taskflow_agent.models import (
 from seclab_taskflow_agent.results import ResultStore, ToolResult
 from seclab_taskflow_agent.runner import (
     ResolvedModel,
+    _aggregate_fanin,
     _build_prompts_to_run,
+    _Branch,
     _capture_task_output,
     _completion,
     _fan_out_deploys,
@@ -827,3 +829,56 @@ class TestCaptureTaskOutput:
         store.record(ToolResult(structured={"functions": ["a"]}))
         _capture_task_output(store, "out", {}, "task-0")
         assert store.outputs["out"] == {"functions": ["a"]}
+
+
+# ===================================================================
+# _aggregate_fanin (multi-model / cross-product fan-in)
+# ===================================================================
+
+def _branch(label: str, item: int, sink=None) -> _Branch:
+    rm = _rm(label)
+    b = _Branch(agents={}, prompt="p", rm=rm, item_index=item, label=label)
+    for tr in sink or []:
+        b.sink.append(tr)
+    return b
+
+
+class TestAggregateFanin:
+    """Tests for the pure fan-in aggregator."""
+
+    def test_empty_branches(self):
+        assert _aggregate_fanin([]) == []
+
+    def test_records_model_item_and_decoded_result(self):
+        b = _branch("gpt_fast", 0, sink=[ToolResult(text=json.dumps({"score": 9}))])
+        records = _aggregate_fanin([b])
+        assert records == [{"model": "gpt_fast", "item": 0, "result": {"score": 9}}]
+
+    def test_uses_last_result_of_branch(self):
+        b = _branch("m", 1, sink=[ToolResult(text="1"), ToolResult(text="2")])
+        assert _aggregate_fanin([b])[0]["result"] == 2
+
+    def test_non_json_text_falls_back_to_text(self):
+        b = _branch("m", 0, sink=[ToolResult(text="not json")])
+        assert _aggregate_fanin([b])[0]["result"] == "not json"
+
+    def test_structured_result_preferred(self):
+        b = _branch("m", 0, sink=[ToolResult(structured=[1, 2, 3])])
+        assert _aggregate_fanin([b])[0]["result"] == [1, 2, 3]
+
+    def test_empty_sink_yields_none(self):
+        b = _branch("m", 2, sink=[])
+        assert _aggregate_fanin([b])[0]["result"] is None
+
+    def test_multiple_branches_preserve_order(self):
+        branches = [
+            _branch("m1", 0, sink=[ToolResult(text="10")]),
+            _branch("m2", 0, sink=[ToolResult(text="20")]),
+            _branch("m1", 1, sink=[ToolResult(text="30")]),
+        ]
+        records = _aggregate_fanin(branches)
+        assert [(r["model"], r["item"], r["result"]) for r in records] == [
+            ("m1", 0, 10),
+            ("m2", 0, 20),
+            ("m1", 1, 30),
+        ]

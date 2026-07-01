@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# Example: multi-model x repeat_prompt cross product.
+# The same prompt is run for every (item, model) pair in parallel, each
+# streamed as its own labelled block ("<model> [item <n>]"). Handy for
+# comparing how different models answer across a set of inputs.
+# See doc/GRAMMAR.md "Multiple Models" and "Typed named outputs".
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: taskflow
+
+model_config: examples.model_configs.multi_model
+
+globals:
+  topics: ["buffer overflows", "use-after-free bugs"]
+
+taskflow:
+  - task:
+      # fan out across both models ...
+      models: [gpt_fast, gpt_alt]
+      # ... and across each topic (the cross product runs concurrently,
+      # bounded by model_concurrency * async_limit)
+      repeat_prompt: true
+      over: "globals.topics"
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        In one short sentence, explain {{ result }}.
