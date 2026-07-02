@@ -13,6 +13,7 @@ class TestManifest:
         monkeypatch.setattr("seclab_taskflow_agent.session._data_dir", lambda: tmp_path)
         s = TaskflowSession(taskflow_path="pkg.flow", total_tasks=2)
         s.record_task(index=0, name="audit", success=True, models=["m1", "m2"], duration_s=1.2345,
+                      usage={"input_tokens": 100, "output_tokens": 20, "cache_read_tokens": 64, "cache_write_tokens": 8},
                       result_snapshot={"results": [], "outputs": {"audit": [{"model": "m1", "item": 0, "result": 1}]}})
         s.record_task(index=1, name="skipme", success=True, skipped=True)
 
@@ -25,6 +26,19 @@ class TestManifest:
         assert m["tasks"][0]["status"] == "ok"
         assert m["tasks"][0]["models"] == ["m1", "m2"]
         assert m["tasks"][0]["duration_s"] == 1.234  # rounded
+        assert m["tasks"][0]["usage"] == {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 64,
+            "cache_write_tokens": 8,
+        }
+        # Run-level usage sums every task's usage.
+        assert m["usage"] == {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 64,
+            "cache_write_tokens": 8,
+        }
         assert m["tasks"][1]["status"] == "skipped"
         assert m["outputs"]["audit"][0]["model"] == "m1"
 

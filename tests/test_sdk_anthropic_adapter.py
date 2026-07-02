@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from seclab_taskflow_agent.sdk import get_backend
-from seclab_taskflow_agent.sdk.base import AgentSpec
+from seclab_taskflow_agent.sdk.base import AgentSpec, TokenUsage
 from seclab_taskflow_agent.sdk.anthropic_sdk.backend import (
     AnthropicSDKBackend,
     _mcp_tools_to_anthropic,
@@ -31,13 +33,13 @@ def _spec(**overrides) -> AgentSpec:
     return AgentSpec(**base)
 
 
-def _make_fake_client(captured: dict, *, stop_reason: str = "end_turn", content: list | None = None):
+def _make_fake_client(captured: dict, *, stop_reason: str = "end_turn", content: list | None = None, usage: Any = None):
     """Build a minimal fake Anthropic client that records messages.stream() kwargs.
 
     The returned client exposes ``client.messages.stream(**kwargs)``; ``kwargs`` is
     written into *captured* so tests can assert on what the backend would have sent
     to the real SDK.  The stream yields nothing and ``get_final_message()`` returns
-    a stub with the requested ``stop_reason``/``content``.
+    a stub with the requested ``stop_reason``/``content``/``usage``.
     """
     final_content = content if content is not None else []
 
@@ -59,7 +61,11 @@ def _make_fake_client(captured: dict, *, stop_reason: str = "end_turn", content:
             return _EmptyAsyncIter()
 
         async def get_final_message(self):
-            return type("M", (), {"stop_reason": stop_reason, "content": final_content})()
+            return type(
+                "M",
+                (),
+                {"stop_reason": stop_reason, "content": final_content, "usage": usage},
+            )()
 
     class _FakeMessages:
         def stream(self, **kwargs):
@@ -294,21 +300,25 @@ def test_invalid_reasoning_effort_raises_at_runtime():
 
 
 def test_prompt_caching_enabled_by_default():
-    """All Claude models support cache_control; default to on so callers
-    get the cost savings without explicit opt-in. Explicit opt-out via
-    prompt_caching=False remains available for proxies that don't support
-    cache_control."""
+    """Caching defaults on: the stable prefix (system prompt + last tool
+    definition) carries a block-level cache_control breakpoint, and no
+    top-level cache_control param is sent -- CAPI's native /v1/messages
+    endpoints reject the top-level form but accept the block-level one."""
     import asyncio
 
     from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
 
     captured: dict = {}
+    tools = [
+        {"name": "a", "description": "", "input_schema": {"type": "object"}},
+        {"name": "b", "description": "", "input_schema": {"type": "object"}},
+    ]
     handle = _AnthropicHandle(
         client=_make_fake_client(captured),
-        system_prompt="",
+        system_prompt="You are a helpful auditor.",
         model="claude-mythos-5",
         max_tokens=100,
-        tools=[],
+        tools=tools,
         mcp_server_map={},
         model_settings={},
     )
@@ -319,14 +329,26 @@ def test_prompt_caching_enabled_by_default():
             pass
 
     asyncio.run(_run())
-    assert captured.get("cache_control") == {"type": "ephemeral"}, (
-        f"expected default cache_control={{type: ephemeral}}, got {captured.get('cache_control')!r}"
+    # No top-level cache_control param.
+    assert "cache_control" not in captured, (
+        f"top-level cache_control must not be sent, got {captured.get('cache_control')!r}"
     )
+    # System prompt is sent as a content block carrying the breakpoint.
+    assert captured["system"] == [
+        {
+            "type": "text",
+            "text": "You are a helpful auditor.",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ], f"expected block-level system cache_control, got {captured.get('system')!r}"
+    # The breakpoint lands on the last tool; earlier tools are untouched.
+    assert captured["tools"][-1].get("cache_control") == {"type": "ephemeral"}
+    assert "cache_control" not in captured["tools"][0]
 
 
 def test_prompt_caching_explicit_opt_out():
-    """prompt_caching=False must suppress cache_control entirely (for
-    callers pointed at proxies that don't support it)."""
+    """prompt_caching=False must suppress all cache_control: the system prompt
+    stays a plain string and tool definitions carry no breakpoint."""
     import asyncio
 
     from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
@@ -334,10 +356,10 @@ def test_prompt_caching_explicit_opt_out():
     captured: dict = {}
     handle = _AnthropicHandle(
         client=_make_fake_client(captured),
-        system_prompt="",
+        system_prompt="You are a helpful auditor.",
         model="claude-mythos-5",
         max_tokens=100,
-        tools=[],
+        tools=[{"name": "a", "description": "", "input_schema": {"type": "object"}}],
         mcp_server_map={},
         model_settings={"prompt_caching": False},
     )
@@ -348,13 +370,15 @@ def test_prompt_caching_explicit_opt_out():
             pass
 
     asyncio.run(_run())
-    assert "cache_control" not in captured, (
-        f"cache_control should be absent when explicitly opted out, got {captured}"
+    assert "cache_control" not in captured
+    assert captured["system"] == "You are a helpful auditor.", (
+        f"system should stay a plain string when caching is off, got {captured.get('system')!r}"
     )
+    assert "cache_control" not in captured["tools"][0]
 
 
 def test_prompt_caching_1h_ttl_passes_ttl_field():
-    """When prompt_caching='1h', cache_control must include the 1h ttl."""
+    """prompt_caching='1h' sets the extended ttl on the block-level breakpoint."""
     import asyncio
 
     from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
@@ -362,7 +386,7 @@ def test_prompt_caching_1h_ttl_passes_ttl_field():
     captured: dict = {}
     handle = _AnthropicHandle(
         client=_make_fake_client(captured),
-        system_prompt="",
+        system_prompt="You are a helpful auditor.",
         model="claude-mythos-5",
         max_tokens=100,
         tools=[],
@@ -376,9 +400,51 @@ def test_prompt_caching_1h_ttl_passes_ttl_field():
             pass
 
     asyncio.run(_run())
-    assert captured.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}, (
-        f"expected cache_control with 1h ttl, got {captured.get('cache_control')!r}"
+    assert captured["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}, (
+        f"expected system block cache_control with 1h ttl, got {captured.get('system')!r}"
     )
+
+
+def test_run_streamed_emits_token_usage():
+    """The response usage (including prompt-cache tokens) is surfaced as a
+    neutral TokenUsage stream event."""
+    import asyncio
+
+    from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
+
+    usage = type(
+        "U",
+        (),
+        {
+            "input_tokens": 9,
+            "output_tokens": 20,
+            "cache_read_input_tokens": 1321,
+            "cache_creation_input_tokens": 0,
+        },
+    )()
+    captured: dict = {}
+    handle = _AnthropicHandle(
+        client=_make_fake_client(captured, usage=usage),
+        system_prompt="You are a helpful auditor.",
+        model="claude-mythos-5",
+        max_tokens=100,
+        tools=[],
+        mcp_server_map={},
+        model_settings={},
+    )
+    backend = AnthropicSDKBackend()
+
+    async def _run():
+        return [ev async for ev in backend.run_streamed(handle, "hi", max_turns=1)]
+
+    events = asyncio.run(_run())
+    assert TokenUsage(
+        model="claude-mythos-5",
+        input_tokens=9,
+        output_tokens=20,
+        cache_read_tokens=1321,
+        cache_write_tokens=0,
+    ) in events
 
 
 # -- blocked_tools filtering --

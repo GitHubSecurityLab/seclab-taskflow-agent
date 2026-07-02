@@ -24,7 +24,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
-from ..base import AgentSpec, StreamEvent, TextDelta, ToolEnd
+from ..base import AgentSpec, StreamEvent, TextDelta, TokenUsage, ToolEnd
 from ..errors import BackendBadRequestError, BackendCapabilityError, BackendUnexpectedError
 from .mcp import build_mcp_config
 from .permissions import build_permission_handler
@@ -224,6 +224,14 @@ class CopilotSDKBackend:
                     text = getattr(data, "delta_content", None) or ""
                     if text:
                         yield TextDelta(text=text)
+                elif etype == SessionEventType.ASSISTANT_USAGE:
+                    yield TokenUsage(
+                        model=getattr(data, "model", "") or "",
+                        input_tokens=int(getattr(data, "input_tokens", 0) or 0),
+                        output_tokens=int(getattr(data, "output_tokens", 0) or 0),
+                        cache_read_tokens=int(getattr(data, "cache_read_tokens", 0) or 0),
+                        cache_write_tokens=int(getattr(data, "cache_write_tokens", 0) or 0),
+                    )
                 elif etype == SessionEventType.TOOL_EXECUTION_COMPLETE:
                     if getattr(data, "success", False):
                         text = _tool_result_text(data)

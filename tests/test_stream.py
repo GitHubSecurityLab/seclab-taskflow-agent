@@ -15,7 +15,7 @@ from seclab_taskflow_agent._stream import (
     handle_tool_end_event,
 )
 from seclab_taskflow_agent.results import ToolResult
-from seclab_taskflow_agent.sdk import TextDelta, ToolEnd
+from seclab_taskflow_agent.sdk import TextDelta, TokenUsage, ToolEnd
 from seclab_taskflow_agent.sdk.errors import (
     BackendRateLimitError,
     BackendTimeoutError,
@@ -90,6 +90,7 @@ def _drive(backend: _ScriptedBackend, hooks: Any = None, record_tool_result: Any
             initial_rate_limit_backoff=kwargs.get("initial_rate_limit_backoff", 1),
             max_rate_limit_backoff=kwargs.get("max_rate_limit_backoff", 4),
             record_tool_result=record_tool_result,
+            record_usage=kwargs.get("record_usage"),
         )
     )
 
@@ -111,6 +112,25 @@ def test_drive_renders_text_and_forwards_tool_event(monkeypatch):
     assert len(recorded) == 1
     assert recorded[0].tool_name == "echo"
     assert recorded[0].text == "r"
+
+
+def test_drive_forwards_token_usage(monkeypatch):
+    async def _fake_render(text: str, **_kw: Any) -> None:
+        del text
+
+    monkeypatch.setattr("seclab_taskflow_agent._stream.render_model_output", _fake_render)
+
+    seen: list[Any] = []
+
+    async def _usage_sink(u: Any) -> None:
+        seen.append(u)
+
+    usage = TokenUsage(model="m", input_tokens=100, output_tokens=20, cache_read_tokens=64)
+    backend = _ScriptedBackend([[TextDelta(text="hi"), usage]])
+
+    _drive(backend, record_usage=_usage_sink)
+
+    assert seen == [usage]
 
 
 def test_drive_retries_then_succeeds_on_timeout(monkeypatch):

@@ -24,7 +24,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..base import AgentSpec, StreamEvent, TextDelta, ToolEnd
+from ..base import AgentSpec, StreamEvent, TextDelta, TokenUsage, ToolEnd
 from ..errors import (
     BackendBadRequestError,
     BackendCapabilityError,
@@ -232,21 +232,41 @@ class AnthropicSDKBackend:
                 create_kwargs["thinking"] = {"type": "adaptive"}
                 create_kwargs["output_config"] = {"effort": effort}
 
-        # Automatic prompt caching: place an ephemeral cache breakpoint at
-        # the longest cacheable prefix (tools + system + accumulated
-        # messages). The breakpoint moves forward on each turn, so
-        # multi-turn agent loops get cache reads on every turn after the
-        # first -- typically 50%+ cost reduction on token-heavy audits.
-        # All current Claude models (and the Anthropic-compatible CAPI
-        # proxy) support cache_control. Default on; explicit opt-out for
-        # callers pointed at proxies that don't support it.
+        # Prompt caching: mark the stable prefix (tool definitions + system
+        # prompt) with a block-level ``cache_control`` breakpoint. Taskflows
+        # reuse the same instructions and tools across many templated prompts,
+        # so the first request writes that prefix to cache and every later
+        # request reads it back -- a large token-cost reduction on repeated
+        # prompts.
+        #
+        # We use block-level ``cache_control`` (on content blocks) rather than
+        # the top-level request param. CAPI's native ``/v1/messages`` surface
+        # is a passthrough: its Anthropic model endpoints reject a top-level
+        # ``cache_control`` ("Extra inputs are not permitted") while accepting
+        # the block-level form on every model -- caching where the upstream
+        # supports it and silently ignoring it where it does not. Default on;
+        # ``prompt_caching: false`` opts out entirely.
         prompt_caching = handle.model_settings.get("prompt_caching", True)
+        system_param: Any = handle.system_prompt
+        tools_param: list[dict[str, Any]] = handle.tools
         if prompt_caching:
             ttl = prompt_caching if isinstance(prompt_caching, str) else "5m"
             cache_block: dict[str, Any] = {"type": "ephemeral"}
             if ttl != "5m":
                 cache_block["ttl"] = ttl
-            create_kwargs["cache_control"] = cache_block
+            if handle.system_prompt:
+                system_param = [
+                    {
+                        "type": "text",
+                        "text": handle.system_prompt,
+                        "cache_control": cache_block,
+                    }
+                ]
+            if tools_param:
+                tools_param = [
+                    *tools_param[:-1],
+                    {**tools_param[-1], "cache_control": cache_block},
+                ]
 
         import anthropic
 
@@ -255,9 +275,9 @@ class AnthropicSDKBackend:
                 async with handle.client.messages.stream(
                     model=handle.model,
                     max_tokens=handle.max_tokens,
-                    system=handle.system_prompt,
+                    system=system_param,
                     messages=messages,
-                    tools=handle.tools or anthropic.NOT_GIVEN,
+                    tools=tools_param or anthropic.NOT_GIVEN,
                     **create_kwargs,
                 ) as stream:
                     async for event in stream:
@@ -287,6 +307,16 @@ class AnthropicSDKBackend:
                 raise BackendUnexpectedError(str(exc)) from exc
             except anthropic.APIError as exc:
                 raise BackendUnexpectedError(str(exc)) from exc
+
+            _emit = getattr(response, "usage", None)
+            if _emit is not None:
+                yield TokenUsage(
+                    model=handle.model,
+                    input_tokens=int(getattr(_emit, "input_tokens", 0) or 0),
+                    output_tokens=int(getattr(_emit, "output_tokens", 0) or 0),
+                    cache_read_tokens=int(getattr(_emit, "cache_read_input_tokens", 0) or 0),
+                    cache_write_tokens=int(getattr(_emit, "cache_creation_input_tokens", 0) or 0),
+                )
 
             if response.stop_reason == "end_turn":
                 return

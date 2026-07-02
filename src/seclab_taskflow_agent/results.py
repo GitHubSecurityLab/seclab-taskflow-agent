@@ -28,6 +28,7 @@ from __future__ import annotations
 __all__ = [
     "ResultStore",
     "ToolResult",
+    "UsageAccumulator",
     "decode_tool_result",
     "normalize_openai_tool_output",
 ]
@@ -182,3 +183,43 @@ class ResultStore:
             store._results = [ToolResult.model_validate(r) for r in data.get("results", [])]
             store._outputs = dict(data.get("outputs", {}))
         return store
+
+
+class UsageAccumulator:
+    """Running total of token usage across a run.
+
+    Adapters emit :class:`~seclab_taskflow_agent.sdk.base.TokenUsage` stream
+    events; the runner feeds each into :meth:`add`. Reading :meth:`as_dict`
+    before and after a task and taking the difference yields that task's usage,
+    while the final total is the whole run's usage. Fields mirror the neutral
+    event so storage stays adapter-independent.
+    """
+
+    __slots__ = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+
+    def __init__(self) -> None:
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cache_read_tokens = 0
+        self.cache_write_tokens = 0
+
+    def add(self, usage: Any) -> None:
+        """Add one usage event's counts to the running total."""
+        self.input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
+        self.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
+        self.cache_read_tokens += int(getattr(usage, "cache_read_tokens", 0) or 0)
+        self.cache_write_tokens += int(getattr(usage, "cache_write_tokens", 0) or 0)
+
+    def as_dict(self) -> dict[str, int]:
+        """Snapshot the running total as a plain dict of counts."""
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+        }
+
+    @staticmethod
+    def delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+        """Return the per-field difference ``after - before``."""
+        return {k: int(after.get(k, 0)) - int(before.get(k, 0)) for k in after}

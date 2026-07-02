@@ -42,6 +42,19 @@ def artifacts_dir(session_id: str) -> Path:
     return d
 
 
+class TokenUsage(BaseModel):
+    """Persisted token usage for one task (or the whole run).
+
+    ``cache_read_tokens`` are input tokens served from the prompt cache (the
+    cost saving) and ``cache_write_tokens`` are tokens written to it.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
 class CompletedTask(BaseModel):
     """Record of a single completed task within a session."""
 
@@ -54,6 +67,9 @@ class CompletedTask(BaseModel):
     models: list[str] = Field(default_factory=list)
     # Wall-clock duration of the task in seconds.
     duration_s: float = 0.0
+    # Token usage attributed to this task (summed across turns and, for
+    # multi-model tasks, across every model branch).
+    usage: TokenUsage = Field(default_factory=TokenUsage)
 
 
 class TaskflowSession(BaseModel):
@@ -111,6 +127,7 @@ class TaskflowSession(BaseModel):
         skipped: bool = False,
         models: list[str] | None = None,
         duration_s: float = 0.0,
+        usage: dict | None = None,
     ) -> None:
         """Record a completed (or skipped) task and save the checkpoint."""
         self.completed_tasks.append(
@@ -121,6 +138,7 @@ class TaskflowSession(BaseModel):
                 skipped=skipped,
                 models=models or [],
                 duration_s=duration_s,
+                usage=TokenUsage(**(usage or {})),
             )
         )
         if result_snapshot is not None:
@@ -154,10 +172,16 @@ class TaskflowSession(BaseModel):
         """Return a stable, machine-readable summary of the run.
 
         This is a curated audit view of the checkpoint: per-task status, the
-        models each task ran against, timing, and the named outputs (which
-        include per-model fan-in records for multi-model tasks). It contains no
-        endpoints or tokens.
+        models each task ran against, timing, token usage, and the named
+        outputs (which include per-model fan-in records for multi-model tasks).
+        It contains no endpoints or secrets.
         """
+        run_usage = {
+            "input_tokens": sum(t.usage.input_tokens for t in self.completed_tasks),
+            "output_tokens": sum(t.usage.output_tokens for t in self.completed_tasks),
+            "cache_read_tokens": sum(t.usage.cache_read_tokens for t in self.completed_tasks),
+            "cache_write_tokens": sum(t.usage.cache_write_tokens for t in self.completed_tasks),
+        }
         return {
             "session_id": self.session_id,
             "taskflow": self.taskflow_path,
@@ -168,6 +192,7 @@ class TaskflowSession(BaseModel):
             "updated_at": self.updated_at,
             "finished_at": self.finished_at or None,
             "total_tasks": self.total_tasks,
+            "usage": run_usage,
             "tasks": [
                 {
                     "index": t.index,
@@ -175,6 +200,7 @@ class TaskflowSession(BaseModel):
                     "status": "skipped" if t.skipped else ("ok" if t.result else "failed"),
                     "models": t.models,
                     "duration_s": round(t.duration_s, 3),
+                    "usage": t.usage.model_dump(),
                 }
                 for t in self.completed_tasks
             ],

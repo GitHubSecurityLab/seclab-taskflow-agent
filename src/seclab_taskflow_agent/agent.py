@@ -190,6 +190,7 @@ class TaskAgent:
             timeout=httpx.Timeout(connect=10.0, read=300.0, write=300.0, pool=60.0),
         )
         self._openai_client = client
+        self.model = model
         set_tracing_disabled(True)
         self.run_hooks = run_hooks or TaskRunHooks()
 

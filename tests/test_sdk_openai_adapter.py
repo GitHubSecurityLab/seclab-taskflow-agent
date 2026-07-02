@@ -12,7 +12,7 @@ from openai import APITimeoutError, BadRequestError, RateLimitError
 
 from seclab_taskflow_agent import sdk
 from seclab_taskflow_agent.sdk import errors
-from seclab_taskflow_agent.sdk.base import AgentSpec, TextDelta
+from seclab_taskflow_agent.sdk.base import AgentSpec, TextDelta, TokenUsage
 from seclab_taskflow_agent.sdk.openai_agents.backend import OpenAIAgentsBackend
 
 
@@ -127,6 +127,37 @@ def test_run_streamed_ignores_non_text_raw_events(monkeypatch, backend):
         )
     )
     assert events == [TextDelta("x")]
+
+
+def test_run_streamed_emits_token_usage(monkeypatch, backend):
+    """After the stream completes, the run's accumulated usage (including
+    OpenAI cached input tokens) is emitted as a neutral TokenUsage event."""
+    from types import SimpleNamespace
+
+    from seclab_taskflow_agent.sdk.openai_agents import backend as backend_mod
+
+    monkeypatch.setattr(backend_mod, "ResponseTextDeltaEvent", _FakeDelta)
+
+    usage = SimpleNamespace(
+        input_tokens=100,
+        output_tokens=20,
+        input_tokens_details=SimpleNamespace(cached_tokens=64),
+    )
+    result = _FakeStreamedResult([_FakeRawTextEvent("x")])
+    result.context_wrapper = SimpleNamespace(usage=usage)
+    agent = SimpleNamespace(
+        model="gpt-x",
+        run_streamed=lambda prompt, *, max_turns: result,  # noqa: ARG005
+    )
+
+    events = _collect(backend.run_streamed(agent, "p", max_turns=1))
+    assert TokenUsage(
+        model="gpt-x",
+        input_tokens=100,
+        output_tokens=20,
+        cache_read_tokens=64,
+        cache_write_tokens=0,
+    ) in events
 
 
 def _make_rate_limit() -> RateLimitError:

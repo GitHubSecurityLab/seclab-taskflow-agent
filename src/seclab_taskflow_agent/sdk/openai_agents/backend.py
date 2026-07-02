@@ -15,7 +15,7 @@ from agents.exceptions import AgentsException, MaxTurnsExceeded
 from openai import APIConnectionError, APITimeoutError, BadRequestError, RateLimitError
 from openai.types.responses import ResponseTextDeltaEvent
 
-from ..base import AgentSpec, StreamEvent, TextDelta
+from ..base import AgentSpec, StreamEvent, TextDelta, TokenUsage
 from ..errors import (
     BackendBadRequestError,
     BackendMaxTurnsError,
@@ -111,6 +111,22 @@ class OpenAIAgentsBackend:
                         event.data, ResponseTextDeltaEvent
                     ):
                         yield TextDelta(text=event.data.delta)
+                # Stream finished normally: emit the run's accumulated token
+                # usage as a neutral event so the runner can store it. The
+                # agents SDK sums usage across turns on context_wrapper; OpenAI
+                # reports cache hits (implicit caching) as cached input tokens
+                # and has no separate cache-write count.
+                usage = getattr(getattr(result, "context_wrapper", None), "usage", None)
+                if usage is not None:
+                    details = getattr(usage, "input_tokens_details", None)
+                    cache_read = getattr(details, "cached_tokens", 0) if details is not None else 0
+                    yield TokenUsage(
+                        model=str(getattr(agent, "model", "") or ""),
+                        input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                        output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+                        cache_read_tokens=int(cache_read or 0),
+                        cache_write_tokens=0,
+                    )
             finally:
                 # aclose() on stream_events() throws GeneratorExit which
                 # skips RunResultStreaming._cleanup_tasks(), so cancel

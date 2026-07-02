@@ -11,6 +11,7 @@ __all__ = [
     "MCPServerSpec",
     "StreamEvent",
     "TextDelta",
+    "TokenUsage",
     "ToolEnd",
 ]
 
@@ -34,7 +35,27 @@ class ToolEnd:
     text: str
 
 
-StreamEvent = Union[TextDelta, ToolEnd]
+@dataclass(frozen=True)
+class TokenUsage:
+    """Backend-neutral token usage for one model response.
+
+    Every adapter emits this as a stream event whenever its provider reports
+    usage, so the runner can gather and store token accounting uniformly
+    regardless of which SDK produced it.
+
+    ``cache_read_tokens`` are input tokens served from the prompt cache (the
+    cost saving) and ``cache_write_tokens`` are tokens written to it. Providers
+    that do not report a field (or are not caching) report 0.
+    """
+
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+StreamEvent = Union[TextDelta, ToolEnd, TokenUsage]
 
 
 @dataclass(frozen=True)

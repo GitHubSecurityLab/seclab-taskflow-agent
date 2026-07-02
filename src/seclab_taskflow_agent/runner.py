@@ -39,7 +39,13 @@ from .mcp_prompt import mcp_system_prompt
 from .mcp_utils import compress_name, mcp_client_params
 from .models import ModelConfigDocument, PersonalityDocument, TaskDefinition
 from .render_utils import OutputRouter, flush_async_output, render_model_output, use_output_router
-from .results import ResultStore, ToolResult, decode_tool_result, normalize_openai_tool_output
+from .results import (
+    ResultStore,
+    ToolResult,
+    UsageAccumulator,
+    decode_tool_result,
+    normalize_openai_tool_output,
+)
 from .output_schema import validate_output
 from .sdk import AgentSpec, MCPServerSpec, get_backend, resolve_backend_name
 from .sdk.errors import (
@@ -527,6 +533,7 @@ async def deploy_task_agents(
     agent_hooks: TaskAgentHooks | None = None,
     stream_label: str | None = None,
     record_tool_result: Callable[[ToolResult], Awaitable[None]] | None = None,
+    record_usage: Callable[[Any], Awaitable[None]] | None = None,
 ) -> bool:
     """Deploy and run task agents with MCP servers.
 
@@ -546,6 +553,8 @@ async def deploy_task_agents(
         record_tool_result: Neutral sink for tool results surfaced by backends
             that stream ``ToolEnd`` events (copilot/anthropic). The openai
             adapter captures results via ``run_hooks.on_tool_end`` instead.
+        record_usage: Neutral sink for ``TokenUsage`` events emitted by every
+            adapter, used to gather per-task token accounting for the manifest.
 
     Returns:
         True if the task completed successfully.
@@ -694,6 +703,7 @@ async def deploy_task_agents(
                 initial_rate_limit_backoff=RATE_LIMIT_BACKOFF,
                 max_rate_limit_backoff=MAX_RATE_LIMIT_BACKOFF,
                 record_tool_result=record_tool_result,
+                record_usage=record_usage,
             )
             complete = True
 
@@ -786,6 +796,7 @@ async def run_main(
     use_output_router(OutputRouter())
 
     store = ResultStore()
+    usage_store = UsageAccumulator()
 
     async def on_tool_end_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool, result: str) -> None:
         # openai-agents delivers tool results here as a backend-specific
@@ -798,6 +809,11 @@ async def run_main(
         # results as stream events rather than via openai-agents RunHooks.
         watchdog_ping()
         store.record(tool_result)
+
+    async def record_usage(usage: Any) -> None:
+        # Neutral sink for TokenUsage events from every adapter; accumulated
+        # into a run-level total and attributed to tasks by snapshot delta.
+        usage_store.add(usage)
 
     async def on_tool_start_hook(context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool) -> None:
         watchdog_ping()
@@ -814,6 +830,7 @@ async def run_main(
             prompt or "",
             run_hooks=TaskRunHooks(on_tool_end=on_tool_end_hook, on_tool_start=on_tool_start_hook),
             record_tool_result=record_tool_result,
+            record_usage=record_usage,
         )
 
     if taskflow_path or resume_session_id:
@@ -1073,6 +1090,7 @@ async def run_main(
                             max_turns=max_turns,
                             run_hooks=run_hooks,
                             record_tool_result=branch_record,
+                            record_usage=record_usage,
                             model=rm.model,
                             model_par=rm.model_settings,
                             api_type=rm.api_type,
@@ -1108,6 +1126,7 @@ async def run_main(
                 task_complete = False
                 last_task_error: BaseException | None = None
                 task_started = time.monotonic()
+                usage_at_task_start = usage_store.as_dict()
 
                 for attempt in range(TASK_RETRY_LIMIT):
                     try:
@@ -1189,6 +1208,7 @@ async def run_main(
                     result_snapshot=store.snapshot(),
                     models=[] if run else [rm.label for rm in resolved_models],
                     duration_s=time.monotonic() - task_started,
+                    usage=UsageAccumulator.delta(usage_at_task_start, usage_store.as_dict()),
                 )
 
         # All tasks completed successfully

@@ -25,7 +25,7 @@ from typing import Any
 from ._watchdog import watchdog_ping
 from .render_utils import render_model_output
 from .results import ToolResult
-from .sdk import TextDelta, ToolEnd
+from .sdk import TextDelta, TokenUsage, ToolEnd
 from .sdk.errors import BackendRateLimitError, BackendTimeoutError
 
 # Application-level backstop: if the backend's event stream goes silent
@@ -73,13 +73,15 @@ async def drive_backend_stream(
     initial_rate_limit_backoff: int,
     max_rate_limit_backoff: int,
     record_tool_result: Any = None,
+    record_usage: Any = None,
 ) -> None:
     """Run the backend's event stream to completion with retry/backoff.
 
     Renders ``TextDelta`` events to stdout, forwards ``ToolEnd`` events to
     :func:`handle_tool_end_event` (which records a neutral
     :class:`~seclab_taskflow_agent.results.ToolResult` via
-    *record_tool_result*), retries up to *max_api_retry* times on
+    *record_tool_result*), logs and forwards ``TokenUsage`` events to
+    *record_usage*, retries up to *max_api_retry* times on
     :class:`BackendTimeoutError`, and applies exponential backoff up to
     *max_rate_limit_backoff* seconds on :class:`BackendRateLimitError`
     before giving up with a :class:`BackendTimeoutError`.
@@ -113,6 +115,18 @@ async def drive_backend_stream(
                         )
                     elif isinstance(event, ToolEnd):
                         await handle_tool_end_event(event, run_hooks, record_tool_result)
+                    elif isinstance(event, TokenUsage):
+                        logging.info(
+                            "token usage model=%s input=%d output=%d "
+                            "cache_write=%d cache_read=%d",
+                            event.model,
+                            event.input_tokens,
+                            event.output_tokens,
+                            event.cache_write_tokens,
+                            event.cache_read_tokens,
+                        )
+                        if record_usage is not None:
+                            await record_usage(event)
             finally:
                 # Close the async generator so its finally block runs even
                 # if we abort early (timeout / consumer break) — the

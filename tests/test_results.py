@@ -10,6 +10,7 @@ import pytest
 from seclab_taskflow_agent.results import (
     ResultStore,
     ToolResult,
+    UsageAccumulator,
     decode_tool_result,
     normalize_openai_tool_output,
 )
@@ -163,3 +164,38 @@ class TestTopLevelStringResult:
         # Plain text that is not itself JSON is not re-decodable as JSON.
         with pytest.raises(ValueError, match="not valid JSON"):
             decode_tool_result(tr)
+
+
+class TestUsageAccumulator:
+    def test_add_sums_events_and_snapshots(self):
+        from seclab_taskflow_agent.sdk import TokenUsage
+
+        acc = UsageAccumulator()
+        acc.add(TokenUsage(model="m", input_tokens=100, output_tokens=20, cache_read_tokens=64))
+        acc.add(TokenUsage(model="m", input_tokens=10, output_tokens=5, cache_write_tokens=8))
+        assert acc.as_dict() == {
+            "input_tokens": 110,
+            "output_tokens": 25,
+            "cache_read_tokens": 64,
+            "cache_write_tokens": 8,
+        }
+
+    def test_add_tolerates_missing_fields(self):
+        acc = UsageAccumulator()
+        acc.add(object())  # no usage attributes at all
+        assert acc.as_dict() == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        }
+
+    def test_delta_is_per_field_difference(self):
+        before = {"input_tokens": 100, "output_tokens": 20, "cache_read_tokens": 0, "cache_write_tokens": 0}
+        after = {"input_tokens": 150, "output_tokens": 30, "cache_read_tokens": 64, "cache_write_tokens": 8}
+        assert UsageAccumulator.delta(before, after) == {
+            "input_tokens": 50,
+            "output_tokens": 10,
+            "cache_read_tokens": 64,
+            "cache_write_tokens": 8,
+        }
