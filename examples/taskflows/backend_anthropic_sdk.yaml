@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# End-to-end functionality flow for the native Anthropic Messages backend
+# (anthropic_sdk). Exercises tool calls (memcache), a multi-step agent loop,
+# and repeat_prompt fan-out over a prior result. Token usage, including any
+# prompt-cache reads/writes, is recorded in the run manifest.
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: taskflow
+model_config: examples.model_configs.anthropic_sdk
+taskflow:
+  - task:
+      model: claude
+      max_steps: 6
+      must_complete: true
+      headless: true
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        Store the json array [1, 2, 3] in memory under the `acc` key as a json
+        object, then retrieve the contents of the `acc` key from memory.
+      env:
+        MEMCACHE_STATE_DIR: "backend_anthropic_sdk_taskflow/"
+        MEMCACHE_BACKEND: "dictionary_file"
+      toolboxes:
+        - seclab_taskflow_agent.toolboxes.memcache
+  - task:
+      model: claude
+      must_complete: true
+      repeat_prompt: true
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        What is the integer value of {{ result }}?

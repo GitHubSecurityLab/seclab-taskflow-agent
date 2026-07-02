@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# Example model_config selecting the native Anthropic Messages backend
+# (anthropic_sdk / api_type: messages). Swap the model id for whatever
+# Claude model your endpoint exposes.
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: model_config
+models:
+  claude: claude-sonnet-4.5
+model_settings:
+  claude:
+    backend: anthropic_sdk
+    api_type: messages
