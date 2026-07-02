@@ -82,3 +82,22 @@ class TestManifestCLI:
         from seclab_taskflow_agent import cli
 
         assert cli._print_manifest("does-not-exist") == 1
+
+
+class TestManifestWriteIsolation:
+    def test_manifest_write_failure_does_not_break_run(self, tmp_path, monkeypatch):
+        """A failing manifest write is swallowed; the checkpoint still saves."""
+        monkeypatch.setattr("seclab_taskflow_agent.session._data_dir", lambda: tmp_path)
+        s = TaskflowSession(taskflow_path="pkg.flow", total_tasks=1)
+        s.record_task(index=0, name="t0", success=True, models=["m1"])
+
+        # Force the manifest serialization to fail.
+        def _boom(*_a, **_k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("seclab_taskflow_agent.session.json.dumps", _boom)
+        # Must not raise, and must still mark the session finished + checkpoint it.
+        s.mark_finished()
+        assert s.finished is True
+        loaded = TaskflowSession.load(s.session_id)
+        assert loaded.finished is True

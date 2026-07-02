@@ -181,12 +181,21 @@ class TaskflowSession(BaseModel):
             "outputs": (self.result_snapshot or {}).get("outputs", {}),
         }
 
-    def write_manifest(self) -> Path:
-        """Write the run manifest to the run-scoped artifacts directory."""
-        path = artifacts_dir(self.session_id) / "manifest.json"
-        path.write_text(json.dumps(self.manifest(), indent=2))
-        logging.debug("Run manifest written: %s", path)
-        return path
+    def write_manifest(self) -> Path | None:
+        """Write the run manifest to the run-scoped artifacts directory.
+
+        Best-effort: a failure to write the audit artifact must never change
+        the run's outcome or mask a task failure, so errors are logged and
+        swallowed. Returns the path on success, ``None`` on failure.
+        """
+        try:
+            path = artifacts_dir(self.session_id) / "manifest.json"
+            path.write_text(json.dumps(self.manifest(), indent=2, default=str))
+            logging.debug("Run manifest written: %s", path)
+            return path
+        except Exception:  # noqa: BLE001 - audit artifact write is best-effort
+            logging.warning("Failed to write run manifest for %s", self.session_id, exc_info=True)
+            return None
 
     @classmethod
     def load(cls, session_id: str) -> TaskflowSession:

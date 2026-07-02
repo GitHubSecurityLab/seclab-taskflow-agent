@@ -317,3 +317,40 @@ class TestRunManifest:
         assert manifest["tasks"][0]["status"] == "ok"
         # fan-in outputs surfaced in the manifest
         assert "cmp" in manifest["outputs"]
+
+
+class TestConditionalUndefined:
+    """`if` on missing context is falsy (skip), not a run-aborting error."""
+
+    def test_if_on_missing_nested_output_skips(self, monkeypatch, tmp_path):
+        # No prior task produces `outputs.audit`, so `outputs.audit.findings`
+        # references a missing nested attribute -> must skip, not abort.
+        task = TaskDefinition(
+            agents=["pkg.p"], user_prompt="remediate",
+            **{"if": "outputs.audit.findings | length > 0"},
+        )
+        calls = _run(monkeypatch, tmp_path, _taskflow(task))
+        assert calls == []
+        data = _session_data(tmp_path)
+        assert data["finished"] is True
+        assert data["completed_tasks"][0]["skipped"] is True
+
+    def test_if_on_missing_top_level_skips(self, monkeypatch, tmp_path):
+        task = TaskDefinition(agents=["pkg.p"], user_prompt="x", **{"if": "outputs.audit"})
+        calls = _run(monkeypatch, tmp_path, _taskflow(task))
+        assert calls == []
+        assert _session_data(tmp_path)["completed_tasks"][0]["skipped"] is True
+
+    def test_upstream_skip_then_downstream_if_still_completes(self, monkeypatch, tmp_path):
+        # Upstream `audit` is gated out; downstream `if` reaches into its
+        # (now missing) output. The whole run must still finish cleanly.
+        a = TaskDefinition(id="audit", agents=["pkg.p"], user_prompt="audit",
+                           **{"if": "globals.deep"})
+        b = TaskDefinition(agents=["pkg.p"], user_prompt="remediate",
+                           **{"if": "outputs.audit.findings"})
+        doc = _taskflow_tasks([a, b], globals_={"deep": False})
+        calls = _run(monkeypatch, tmp_path, doc)
+        assert calls == []  # both skipped
+        data = _session_data(tmp_path)
+        assert data["finished"] is True
+        assert all(t["skipped"] for t in data["completed_tasks"])

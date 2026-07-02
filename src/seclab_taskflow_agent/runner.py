@@ -919,8 +919,10 @@ async def run_main(
 
             # GitHub-Actions-style conditional: when `if` is set, run the task
             # only if the expression evaluates truthy against the template
-            # context (globals / inputs / outputs). Otherwise record a skip and
-            # advance to the next task.
+            # context (globals / inputs / outputs). Referencing context that
+            # does not exist yet (e.g. an output from a skipped upstream task)
+            # is treated as falsy -> skip, matching GitHub Actions semantics; a
+            # malformed expression is a hard, resumable failure.
             if task.if_:
                 try:
                     condition = evaluate_expression(
@@ -930,8 +932,16 @@ async def run_main(
                         inputs_dict=inputs,
                         outputs_dict=store.outputs,
                     )
+                except jinja2.UndefinedError:
+                    condition = False
                 except jinja2.TemplateError as e:
-                    logging.error("Error evaluating task 'if' condition: %s", e)
+                    logging.error("Invalid task 'if' condition %r: %s", task.if_, e)
+                    session.mark_failed(f"Task {task_name!r} has an invalid 'if' condition: {e}")
+                    await render_model_output(
+                        f"** 🤖❗ Invalid 'if' condition: {e}\n"
+                        f"** 🤖💾 Session saved: {session.session_id}\n"
+                        f"** 🤖💡 Resume with: --resume {session.session_id}\n"
+                    )
                     raise ValueError(f"Failed to evaluate task 'if' condition: {e}") from e
                 if not condition:
                     await render_model_output(
