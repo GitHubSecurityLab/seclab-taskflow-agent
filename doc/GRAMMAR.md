@@ -223,8 +223,9 @@ Notes:
 - The expression may be written bare (`globals.mode == 'deep'`) or wrapped in
   `{{ ... }}`. Standard truthiness applies (empty list/string/`0`/`false` are
   falsy).
-- The condition is evaluated with `StrictUndefined`, so referencing a name that
-  does not exist raises rather than silently skipping. Guard optional data with
+- Referencing a name that does not exist (for example an output from a task that
+  has not run) is treated as falsy, so the task is skipped rather than failing,
+  matching GitHub Actions semantics. To be explicit you can still guard with
   `is defined`, e.g. `if: "outputs.audit is defined and outputs.audit.findings"`.
 - `if` composes with everything else: a skipped task does not run its agents,
   fan out over `models`, or capture outputs.
@@ -248,8 +249,10 @@ directly inside a `user_prompt`:
         {% endfor %}
 ```
 
-As with `if`, undefined variables raise (to catch typos). Use `is defined` or
-the `default` filter for optional data: `{{ globals.note | default('') }}`.
+Unlike the task-level `if` condition (which treats undefined names as falsy and
+skips the task), undefined variables inside a prompt raise, to catch typos. Use
+`is defined` or the `default` filter for optional data:
+`{{ globals.note | default('') }}`.
 
 ### Running templated tasks in a loop
 

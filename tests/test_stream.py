@@ -115,8 +115,8 @@ def test_drive_renders_text_and_forwards_tool_event(monkeypatch):
 
 
 def test_drive_forwards_token_usage(monkeypatch):
-    async def _fake_render(text: str, **_kw: Any) -> None:
-        del text
+    async def _fake_render(*_a: Any, **_kw: Any) -> None:
+        return None
 
     monkeypatch.setattr("seclab_taskflow_agent._stream.render_model_output", _fake_render)
 
