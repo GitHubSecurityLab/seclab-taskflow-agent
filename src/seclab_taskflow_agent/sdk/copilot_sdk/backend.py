@@ -225,6 +225,10 @@ class CopilotSDKBackend:
                     if text:
                         yield TextDelta(text=text)
                 elif etype == SessionEventType.ASSISTANT_USAGE:
+                    # Copilot reports usage from the chat_completions surface,
+                    # so (like OpenAI) ``input_tokens`` INCLUDES cached tokens
+                    # and ``cache_read_tokens`` is a subset already counted in
+                    # it, not an additional amount.
                     yield TokenUsage(
                         model=getattr(data, "model", "") or "",
                         input_tokens=int(getattr(data, "input_tokens", 0) or 0),

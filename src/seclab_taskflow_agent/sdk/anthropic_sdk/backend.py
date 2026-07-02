@@ -308,6 +308,11 @@ class AnthropicSDKBackend:
             except anthropic.APIError as exc:
                 raise BackendUnexpectedError(str(exc)) from exc
 
+            # Anthropic (native Messages surface) reports these counts as
+            # DISJOINT: ``input_tokens`` is freshly-processed input only and
+            # does NOT include ``cache_read_input_tokens`` (cache reads) or
+            # ``cache_creation_input_tokens`` (cache writes), which are billed
+            # separately. Total input processed = input + cache_read + cache_write.
             _emit = getattr(response, "usage", None)
             if _emit is not None:
                 yield TokenUsage(

@@ -113,9 +113,13 @@ class OpenAIAgentsBackend:
                         yield TextDelta(text=event.data.delta)
                 # Stream finished normally: emit the run's accumulated token
                 # usage as a neutral event so the runner can store it. The
-                # agents SDK sums usage across turns on context_wrapper; OpenAI
-                # reports cache hits (implicit caching) as cached input tokens
-                # and has no separate cache-write count.
+                # agents SDK sums usage across turns on context_wrapper.
+                #
+                # Accounting note: OpenAI's ``input_tokens`` INCLUDES cached
+                # tokens, so ``cache_read_tokens`` (cached_tokens) is a subset
+                # already counted in ``input_tokens`` -- unlike Anthropic, where
+                # the counts are disjoint. Cache hits come from implicit
+                # caching, so there is no separate cache-write count.
                 usage = getattr(getattr(result, "context_wrapper", None), "usage", None)
                 if usage is not None:
                     details = getattr(usage, "input_tokens_details", None)

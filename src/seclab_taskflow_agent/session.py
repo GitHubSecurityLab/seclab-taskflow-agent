@@ -175,6 +175,12 @@ class TaskflowSession(BaseModel):
         models each task ran against, timing, token usage, and the named
         outputs (which include per-model fan-in records for multi-model tasks).
         It contains no endpoints or secrets.
+
+        Usage accounting: token usage is reported per completed task, and the
+        run-level ``usage`` is the sum over ``completed_tasks``. A task that
+        fails is intentionally not recorded as completed (so ``--resume``
+        re-runs it); it is named in ``error`` but its partial token usage is
+        not itemized or summed here.
         """
         run_usage = {
             "input_tokens": sum(t.usage.input_tokens for t in self.completed_tasks),
