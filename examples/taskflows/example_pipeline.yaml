@@ -23,7 +23,13 @@ taskflow:
       run: |
         echo '{"findings": ["use-after-free in parser", "overflow in loader"]}'
       outputs:
-        findings: list[str]
+        type: object
+        properties:
+          findings:
+            type: array
+            items:
+              type: string
+        required: [findings]
   - task:
       # only triage when the audit found enough findings
       if: "outputs.audit.findings | length >= globals.min_findings"

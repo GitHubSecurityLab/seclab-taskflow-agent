@@ -201,10 +201,10 @@ class TaskDefinition(BaseModel):
         # Fail fast on a malformed outputs schema at load time, before any
         # model calls are made.
         if self.outputs:
-            from .output_schema import OutputSchemaError, build_output_model
+            from .output_schema import OutputSchemaError, validate_output_schema
 
             try:
-                build_output_model(f"{self.id or self.name or 'task'}_output", self.outputs)
+                validate_output_schema(self.outputs)
             except OutputSchemaError as exc:
                 raise ValueError(f"invalid 'outputs' schema: {exc}") from exc
         if self.over and not self.repeat_prompt:

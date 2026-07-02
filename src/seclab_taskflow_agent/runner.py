@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import jinja2
-from pydantic import ValidationError
+from jsonschema.exceptions import ValidationError
 
 from ._stream import drive_backend_stream
 from ._watchdog import start_watchdog, watchdog_ping
@@ -272,13 +272,12 @@ def _aggregate_fanin(branches: list[_Branch]) -> list[dict[str, Any]]:
 def _capture_branch_output(
     branch: _Branch,
     schema: dict[str, Any],
-    output_id: str,
     *,
     agent_ok: bool,
 ) -> bool:
     """Validate one multi-model branch's result against the task's outputs schema.
 
-    Stores the coerced value on ``branch.output`` (``None`` when the branch
+    Stores the validated value on ``branch.output`` (``None`` when the branch
     failed to run or its result violates the contract) and returns whether the
     branch both ran and produced a schema-valid result. A contract violation is
     therefore surfaced as a failed branch, which the task's ``completion`` policy
@@ -299,7 +298,7 @@ def _capture_branch_output(
     except ValueError:
         value = branch.sink[-1].text
     try:
-        branch.output = validate_output(schema, value, model_name=f"{output_id}_output")
+        branch.output = validate_output(schema, value)
         return True
     except (ValidationError, ValueError) as exc:
         logging.error(
@@ -392,7 +391,7 @@ def _capture_task_output(
 
     if schema:
         value = decode_tool_result(last)
-        validated = validate_output(schema, value, model_name=f"{output_id}_output")
+        validated = validate_output(schema, value)
         store.set_output(output_id, validated)
     else:
         try:
@@ -1158,12 +1157,11 @@ async def run_main(
                         # result against the task's `outputs` schema. A missing
                         # or schema-violating result makes it a failed branch,
                         # folded into the completion policy alongside run
-                        # failures; the coerced value feeds fan-in.
+                        # failures; the validated value feeds fan-in.
                         if multi_model and task_output_schema:
                             return _capture_branch_output(
                                 branch,
                                 task_output_schema,
-                                task_output_id or task_name,
                                 agent_ok=branch_ok,
                             )
                         return branch_ok

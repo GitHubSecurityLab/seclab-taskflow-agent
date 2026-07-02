@@ -409,9 +409,11 @@ Three fields drive this:
 
 - `id` names a task. Its produced value (its final tool result) is exposed to
   later tasks as `outputs.<id>`.
-- `outputs` declares an inline schema. When present, the task's value is
-  validated and coerced against it before being stored. A malformed schema is
-  rejected when the taskflow is loaded, before any model calls are made.
+- `outputs` declares an inline JSON Schema (Draft 2020-12). When present, the
+  task's value is validated against it before being stored. Validation is strict
+  and does not coerce, so a value whose types do not match the contract is a
+  failure. A malformed schema is rejected when the taskflow is loaded, before
+  any model calls are made.
 - `over` is an explicit iterable selector for `repeat_prompt`: a Jinja
   expression evaluated against the template context (so it yields a real list,
   not a re-parsed string).
@@ -425,11 +427,17 @@ Example: one task produces a typed list of functions, the next analyses each.
       user_prompt: |
         List all functions as JSON: {"functions": [{"name": ..., "body": ...}]}
       outputs:
-        functions:
-          type: list
-          items:
-            name: str
-            body: str
+        type: object
+        properties:
+          functions:
+            type: array
+            items:
+              type: object
+              properties:
+                name: {type: string}
+                body: {type: string}
+              required: [name, body]
+        required: [functions]
   - task:
       repeat_prompt: true
       over: "outputs.list_functions.functions"
@@ -439,17 +447,20 @@ Example: one task produces a typed list of functions, the next analyses each.
         {{ result.body }}
 ```
 
-The `outputs` schema is a mapping of field name to type spec:
+The `outputs` schema is a standard JSON Schema (Draft 2020-12), authored inline
+in YAML, so the full vocabulary is available:
 
-- Scalars (as strings): `str`, `int`, `float`, `bool`, `any` (plus synonyms
-  `string`/`integer`/`number`/`boolean`). A trailing `?` marks a field
-  optional, e.g. `note: str?`.
-- Lists (as strings): `list` (list of any) or `list[T]` for a scalar `T`, e.g.
-  `tags: list[str]`.
-- Nested objects: a mapping whose keys are sub-field specs, or the explicit
-  `{type: object, fields: {...}}` form.
-- Lists of objects: `{type: list, items: <spec>}`, where `items` is any spec
-  (a scalar, a nested object mapping, etc.).
+- Types via `type` (`object`, `array`, `string`, `integer`, `number`,
+  `boolean`, `null`), with `properties`/`required` for objects and `items` for
+  arrays.
+- `enum`/`const` for fixed value sets, and constraints such as `minimum`,
+  `maximum`, `minLength`, and `pattern`.
+- Objects with dynamic keys via `additionalProperties`, and strictness via
+  `additionalProperties: false`.
+- Unions (`anyOf`/`oneOf`), and `$ref`/`$defs` to reuse a shape across fields.
+
+Because validation is strict (no coercion), have the task emit JSON whose types
+already match, e.g. the integer `7` rather than the string `"7"`.
 
 Notes:
 

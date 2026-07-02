@@ -191,14 +191,27 @@ class TestTypedOutputs:
         t = TaskDefinition(
             id="list_functions",
             user_prompt="list them",
-            outputs={"functions": {"type": "list", "items": {"name": "str", "body": "str"}}},
+            outputs={
+                "type": "object",
+                "properties": {
+                    "functions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"name": {"type": "string"}, "body": {"type": "string"}},
+                            "required": ["name", "body"],
+                        },
+                    }
+                },
+                "required": ["functions"],
+            },
         )
         assert t.id == "list_functions"
-        assert "functions" in t.outputs
+        assert t.outputs["properties"]["functions"]["type"] == "array"
 
     def test_invalid_outputs_schema_rejected_at_load(self):
         with pytest.raises(ValidationError, match="invalid 'outputs' schema"):
-            TaskDefinition(id="x", user_prompt="hi", outputs={"f": "not-a-real-type"})
+            TaskDefinition(id="x", user_prompt="hi", outputs={"type": "not-a-json-schema-type"})
 
     def test_over_requires_repeat_prompt(self):
         with pytest.raises(ValidationError, match="'over' only applies to repeat_prompt"):
@@ -223,8 +236,9 @@ class TestTypedOutputs:
     def test_outputs_schema_allowed_on_multi_model(self):
         # Typed outputs are now supported on multi-model tasks: the schema is
         # applied per branch (see runner fan-in), so construction must succeed.
-        t = TaskDefinition(user_prompt="hi", models=["a", "b"], outputs={"f": "str"})
-        assert t.outputs == {"f": "str"}
+        schema = {"type": "object", "properties": {"f": {"type": "string"}}, "required": ["f"]}
+        t = TaskDefinition(user_prompt="hi", models=["a", "b"], outputs=schema)
+        assert t.outputs == schema
         assert [e.model for e in t.models] == ["a", "b"]
 
 

@@ -17,10 +17,16 @@ taskflow:
       # a shell task produces the structured object deterministically
       run: |
         echo '{"items": ["apples", "bananas", "oranges"]}'
-      # validate/coerce the produced value against this schema before it is
+      # validate the produced value against this JSON Schema before it is
       # stored as outputs.fruit_list
       outputs:
-        items: list[str]
+        type: object
+        properties:
+          items:
+            type: array
+            items:
+              type: string
+        required: [items]
   - task:
       repeat_prompt: true
       # iterate the typed output by name (no double-JSON heuristic)

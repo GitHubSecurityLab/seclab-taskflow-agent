@@ -14,6 +14,7 @@ import asyncio
 import glob
 import json
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import MagicMock
 
 from seclab_taskflow_agent.models import (
@@ -229,7 +230,14 @@ class TestOutputCaptureFailure:
         monkeypatch.setattr(runner, "start_watchdog", lambda: None)
         monkeypatch.setattr("seclab_taskflow_agent.session._data_dir", lambda: tmp_path)
 
-        task = TaskDefinition(id="x", agents=["pkg.p"], user_prompt="hi", outputs={"items": "list[str]"})
+        task = TaskDefinition(
+            id="x", agents=["pkg.p"], user_prompt="hi",
+            outputs={
+                "type": "object",
+                "properties": {"items": {"type": "array", "items": {"type": "string"}}},
+                "required": ["items"],
+            },
+        )
         at = MagicMock()
         at.get_taskflow.return_value = _taskflow(task)
         at.get_personality.return_value = _personality()
@@ -359,6 +367,12 @@ class TestConditionalUndefined:
 class TestTypedMultiModelOutputs:
     """Typed `outputs` schema applied per branch on multi-model tasks."""
 
+    _SCHEMA: ClassVar[dict] = {
+        "type": "object",
+        "properties": {"score": {"type": "integer"}},
+        "required": ["score"],
+    }
+
     @staticmethod
     def _valid_deploy():
         async def _impl(available_tools, agents, prompt, *, model=None, record_tool_result=None, **kw):
@@ -382,19 +396,19 @@ class TestTypedMultiModelOutputs:
     def test_typed_fanin_validates_each_branch(self, monkeypatch, tmp_path):
         task = TaskDefinition(
             id="cmp", agents=["pkg.p"], user_prompt="score X",
-            models=["m1", "m2"], outputs={"score": "int"},
+            models=["m1", "m2"], outputs=self._SCHEMA,
         )
         _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=self._valid_deploy())
         records = _session_outputs(tmp_path)["cmp"]
         assert [r["model"] for r in records] == ["m1", "m2"]
-        # Each branch result is the validated/coerced schema value, not the raw envelope.
+        # Each branch result is the validated schema value, not the raw envelope.
         assert all(r["result"] == {"score": 7} for r in records)
         assert _session_data(tmp_path)["completed_tasks"][0]["result"] is True
 
     def test_schema_violation_fails_branch_completion_all(self, monkeypatch, tmp_path):
         task = TaskDefinition(
             id="cmp", agents=["pkg.p"], user_prompt="score X",
-            models=["m1", "m2"], outputs={"score": "int"}, completion="all",
+            models=["m1", "m2"], outputs=self._SCHEMA, completion="all",
         )
         _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=self._mixed_deploy())
         by_model = {r["model"]: r["result"] for r in _session_outputs(tmp_path)["cmp"]}
@@ -406,7 +420,7 @@ class TestTypedMultiModelOutputs:
     def test_schema_violation_tolerated_completion_any(self, monkeypatch, tmp_path):
         task = TaskDefinition(
             id="cmp", agents=["pkg.p"], user_prompt="score X",
-            models=["m1", "m2"], outputs={"score": "int"}, completion="any",
+            models=["m1", "m2"], outputs=self._SCHEMA, completion="any",
         )
         _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=self._mixed_deploy())
         # completion=any: one schema-valid branch is enough for task success.

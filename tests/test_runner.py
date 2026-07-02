@@ -801,23 +801,41 @@ class TestCaptureTaskOutput:
     def test_capture_with_schema_validates(self):
         store = ResultStore()
         store.record(ToolResult(text=json.dumps({"functions": [{"name": "f", "body": "b"}]})))
-        schema = {"functions": {"type": "list", "items": {"name": "str", "body": "str"}}}
+        schema = {
+            "type": "object",
+            "properties": {
+                "functions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"name": {"type": "string"}, "body": {"type": "string"}},
+                        "required": ["name", "body"],
+                    },
+                }
+            },
+            "required": ["functions"],
+        }
         _capture_task_output(store, "list_fns", schema, "task-0")
         assert store.outputs["list_fns"] == {"functions": [{"name": "f", "body": "b"}]}
 
     def test_capture_with_schema_validation_error(self):
-        from pydantic import ValidationError
+        from jsonschema.exceptions import ValidationError
 
         store = ResultStore()
         store.record(ToolResult(text=json.dumps({"functions": "not-a-list"})))
-        schema = {"functions": {"type": "list", "items": {"name": "str"}}}
+        schema = {
+            "type": "object",
+            "properties": {"functions": {"type": "array"}},
+            "required": ["functions"],
+        }
         with pytest.raises(ValidationError):
             _capture_task_output(store, "list_fns", schema, "task-0")
 
     def test_capture_no_result_with_schema_raises(self):
         store = ResultStore()
+        schema = {"type": "object", "properties": {"f": {"type": "string"}}, "required": ["f"]}
         with pytest.raises(ValueError, match="produced no tool result"):
-            _capture_task_output(store, "x", {"f": "str"}, "task-0")
+            _capture_task_output(store, "x", schema, "task-0")
 
     def test_capture_no_result_schemaless_sets_none(self):
         store = ResultStore()

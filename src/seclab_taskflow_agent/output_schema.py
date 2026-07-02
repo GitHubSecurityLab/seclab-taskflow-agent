@@ -1,141 +1,77 @@
 # SPDX-FileCopyrightText: GitHub, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Compile inline ``outputs`` schemas into Pydantic models.
+"""Validate task outputs against an inline JSON Schema.
 
-A task can declare a typed output contract inline:
+A task can declare a typed output contract inline as a JSON Schema (Draft
+2020-12), authored directly in YAML:
 
 .. code-block:: yaml
 
     outputs:
-      functions:
-        type: list
-        items:
-          name: str
-          body: str
+      type: object
+      properties:
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              file: {type: string}
+              severity: {type: string, enum: [low, medium, high]}
+            required: [file, severity]
+      required: [findings]
 
-This module turns such a schema into a generated Pydantic model so a task's
-produced value can be validated and coerced before it is passed to downstream
-tasks as ``outputs.<id>``.
-
-Supported field type specs:
-
-* Scalars (as strings): ``str``, ``int``, ``float``, ``bool``, ``any`` (plus
-  the synonyms ``string``/``integer``/``number``/``boolean``). A trailing
-  ``?`` marks the field optional, e.g. ``str?``.
-* Lists (as strings): ``list`` (list of any) or ``list[T]`` where ``T`` is a
-  scalar type name, e.g. ``list[str]``.
-* Nested objects (as a mapping): a mapping whose keys are sub-field specs, or
-  the explicit ``{type: object, fields: {...}}`` form.
-* Lists of objects (as a mapping): ``{type: list, items: <spec>}`` where
-  ``items`` is any spec (a scalar string, a nested object mapping, etc.).
+The task's produced value is validated against the schema before it is passed
+to downstream tasks as ``outputs.<id>``. Using JSON Schema (validated with the
+``jsonschema`` library) rather than a bespoke type language gives enums,
+numeric/string constraints, unions, objects with dynamic keys, and ``$ref``
+reuse for free, and the schema itself is checked for well-formedness when the
+taskflow loads.
 """
 
 from __future__ import annotations
 
-__all__ = ["OutputSchemaError", "build_output_model", "validate_output"]
+__all__ = ["OutputSchemaError", "validate_output", "validate_output_schema"]
 
-from typing import Any, Optional
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, create_model
-
-_SCALARS: dict[str, Any] = {
-    "str": str,
-    "string": str,
-    "int": int,
-    "integer": int,
-    "float": float,
-    "number": float,
-    "bool": bool,
-    "boolean": bool,
-    "any": Any,
-}
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 
 
 class OutputSchemaError(ValueError):
-    """Raised when an ``outputs`` schema is malformed or unsupported."""
+    """Raised when an ``outputs`` schema is not a well-formed JSON Schema."""
 
 
-def _scalar_type(name: str, field: str) -> Any:
-    key = name.strip().lower()
-    if key not in _SCALARS:
-        raise OutputSchemaError(f"unsupported type {name!r} in field {field!r}")
-    return _SCALARS[key]
+def validate_output_schema(schema: Any) -> None:
+    """Check that *schema* is a well-formed JSON Schema, raising on failure.
 
-
-def _spec_to_type(field: str, spec: Any, model_name: str) -> tuple[Any, bool]:
-    """Resolve a field spec into ``(python_type, optional)``."""
-    if isinstance(spec, str):
-        s = spec.strip()
-        optional = s.endswith("?")
-        if optional:
-            s = s[:-1].strip()
-        low = s.lower()
-        if low == "list":
-            return list, optional
-        if low.startswith("list[") and low.endswith("]"):
-            inner = s[5:-1].strip()
-            return list[_scalar_type(inner, field)], optional
-        return _scalar_type(s, field), optional
-
-    if isinstance(spec, dict):
-        optional = bool(spec.get("optional", False))
-        declared = spec.get("type")
-        if declared is None:
-            # Nested object shorthand: the mapping's keys are sub-fields.
-            return _build_model(f"{model_name}_{field}", spec), optional
-        declared = str(declared).lower()
-        if declared == "list":
-            items = spec.get("items", "any")
-            inner_type, _ = _spec_to_type(field, items, f"{model_name}_{field}")
-            return list[inner_type], optional
-        if declared == "object":
-            fields = spec.get("fields")
-            if not isinstance(fields, dict):
-                raise OutputSchemaError(
-                    f"object field {field!r} requires a 'fields' mapping"
-                )
-            return _build_model(f"{model_name}_{field}", fields), optional
-        # Scalar declared via the ``type`` key, e.g. {type: str}.
-        return _scalar_type(declared, field), optional
-
-    raise OutputSchemaError(f"invalid type spec for field {field!r}: {spec!r}")
-
-
-def _build_model(name: str, fields: Any) -> type[BaseModel]:
-    if not isinstance(fields, dict) or not fields:
-        raise OutputSchemaError(f"schema {name!r} must be a non-empty mapping of fields")
-    field_defs: dict[str, Any] = {}
-    for fname, fspec in fields.items():
-        if not isinstance(fname, str) or not fname.isidentifier():
-            raise OutputSchemaError(f"invalid field name {fname!r} in schema {name!r}")
-        py_type, optional = _spec_to_type(fname, fspec, name)
-        if optional:
-            field_defs[fname] = (Optional[py_type], None)
-        else:
-            field_defs[fname] = (py_type, ...)
-    return create_model(name, __config__=ConfigDict(extra="allow"), **field_defs)
-
-
-def build_output_model(name: str, schema: dict[str, Any]) -> type[BaseModel]:
-    """Compile an ``outputs`` schema mapping into a Pydantic model class.
+    Called at taskflow load time so a malformed output contract fails fast,
+    before any model calls are made.
 
     Raises:
-        OutputSchemaError: If the schema is malformed or uses an unsupported
-            type. Callers can use this to validate schemas at load time.
+        OutputSchemaError: If *schema* is not a non-empty, valid JSON Schema.
     """
-    return _build_model(name, schema)
+    if not isinstance(schema, dict) or not schema:
+        raise OutputSchemaError("'outputs' must be a non-empty JSON Schema object")
+    try:
+        Draft202012Validator.check_schema(schema)
+    except SchemaError as exc:
+        raise OutputSchemaError(f"invalid 'outputs' schema: {exc.message}") from exc
 
 
-def validate_output(
-    schema: dict[str, Any], value: Any, model_name: str = "TaskOutput"
-) -> dict[str, Any]:
-    """Validate/coerce *value* against *schema*, returning a plain dict.
+def validate_output(schema: dict[str, Any], value: Any) -> Any:
+    """Validate *value* against the JSON Schema *schema* and return it unchanged.
+
+    JSON Schema validation does not coerce, so a value whose types do not
+    already match the contract is a failure. This is deliberately stricter than
+    permissive coercion: it surfaces malformed model output instead of silently
+    reshaping it.
 
     Raises:
-        OutputSchemaError: If the schema itself is invalid.
-        pydantic.ValidationError: If *value* does not satisfy the schema.
+        OutputSchemaError: If *schema* itself is malformed.
+        jsonschema.ValidationError: If *value* does not satisfy *schema*.
     """
-    model = build_output_model(model_name, schema)
-    obj = model.model_validate(value)
-    return obj.model_dump()
+    validate_output_schema(schema)
+    Draft202012Validator(schema).validate(value)
+    return value
