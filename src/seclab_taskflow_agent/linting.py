@@ -155,9 +155,10 @@ def _lint_task(task: TaskDefinition, location: str, ctx: _Ctx) -> None:
     for entry in entries:
         _check_model_name(entry.model, location, ctx)
 
-    # Prompt / over template syntax.
+    # Prompt / over / if template + expression syntax.
     _check_template(task.user_prompt, "user_prompt", location, ctx)
     _check_expression(task.over, "over", location, ctx)
+    _check_expression(task.if_, "if", location, ctx)
 
 
 def lint_taskflow(

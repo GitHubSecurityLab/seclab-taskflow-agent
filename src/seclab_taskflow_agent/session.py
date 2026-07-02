@@ -39,6 +39,7 @@ class CompletedTask(BaseModel):
     index: int
     name: str = ""
     result: bool = False
+    skipped: bool = False
 
 
 class TaskflowSession(BaseModel):
@@ -92,13 +93,15 @@ class TaskflowSession(BaseModel):
         name: str,
         success: bool,
         result_snapshot: dict | None = None,
+        skipped: bool = False,
     ) -> None:
-        """Record a completed task and save the checkpoint."""
+        """Record a completed (or skipped) task and save the checkpoint."""
         self.completed_tasks.append(
             CompletedTask(
                 index=index,
                 name=name,
                 result=success,
+                skipped=skipped,
             )
         )
         if result_snapshot is not None:

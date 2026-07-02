@@ -111,6 +111,11 @@ class TaskDefinition(BaseModel):
     name: str = ""
     description: str = ""
     id: str = ""
+    # GitHub-Actions-style conditional: when set, the task runs only if this
+    # Jinja expression evaluates truthy against the template context
+    # (globals / inputs / outputs). ``if`` is a Python keyword, so it is
+    # aliased. Empty means the task always runs.
+    if_: str = Field(default="", alias="if")
     agents: list[str] = Field(default_factory=list)
     user_prompt: str = ""
     run: str = ""

@@ -195,6 +195,62 @@ Example:
         ...
 ```
 
+### Conditional execution (`if`)
+
+A task can be gated with a GitHub-Actions-style `if` condition: a Jinja
+expression evaluated against the template context (`globals`, `inputs`, and
+prior tasks' `outputs`). When it evaluates falsy the task is skipped (recorded
+as skipped and not run); otherwise it runs normally.
+
+```yaml
+  - task:
+      id: audit
+      agents: [seclab_taskflow_agent.personalities.c_auditer]
+      user_prompt: |
+        Audit this code and report findings as JSON: {"findings": [...]}
+      outputs:
+        findings: list[any]
+  - task:
+      # only remediate when the audit actually found something
+      if: "outputs.audit.findings | length > 0"
+      agents: [seclab_taskflow_agent.personalities.assistant]
+      user_prompt: |
+        Propose fixes for: {{ outputs.audit.findings }}
+```
+
+Notes:
+
+- The expression may be written bare (`globals.mode == 'deep'`) or wrapped in
+  `{{ ... }}`. Standard truthiness applies (empty list/string/`0`/`false` are
+  falsy).
+- The condition is evaluated with `StrictUndefined`, so referencing a name that
+  does not exist raises rather than silently skipping. Guard optional data with
+  `is defined`, e.g. `if: "outputs.audit is defined and outputs.audit.findings"`.
+- `if` composes with everything else: a skipped task does not run its agents,
+  fan out over `models`, or capture outputs.
+
+### Conditionals and loops inside a prompt
+
+Because prompts are rendered with Jinja2, you can use `{% if %}` / `{% for %}`
+directly inside a `user_prompt`:
+
+```yaml
+  - task:
+      agents: [seclab_taskflow_agent.personalities.c_auditer]
+      user_prompt: |
+        {% if globals.mode == 'deep' %}
+        Perform a DEEP audit of {{ globals.target }}.
+        {% else %}
+        Do a quick scan of {{ globals.target }}.
+        {% endif %}
+        {% for area in globals.focus %}
+        - pay attention to {{ area }}
+        {% endfor %}
+```
+
+As with `if`, undefined variables raise (to catch typos). Use `is defined` or
+the `default` filter for optional data: `{{ globals.note | default('') }}`.
+
 ### Running templated tasks in a loop
 
 Often we may want to iterate through the same tasks with different inputs. For example, we may want to fetch all the functions from a code base and then analyze each of the functions. This can be done using two consecutive tasks and with the help of the `repeat_prompt` field. 

@@ -914,6 +914,36 @@ async def run_main(
             task_output_id = task.id
             task_output_schema = task.outputs or {}
             over = task.over or ""
+            task_name = task.name or f"task-{task_index}"
+
+            # GitHub-Actions-style conditional: when `if` is set, run the task
+            # only if the expression evaluates truthy against the template
+            # context (globals / inputs / outputs). Otherwise record a skip and
+            # advance to the next task.
+            if task.if_:
+                try:
+                    condition = evaluate_expression(
+                        task.if_,
+                        available_tools,
+                        globals_dict=global_variables,
+                        inputs_dict=inputs,
+                        outputs_dict=store.outputs,
+                    )
+                except jinja2.TemplateError as e:
+                    logging.error("Error evaluating task 'if' condition: %s", e)
+                    raise ValueError(f"Failed to evaluate task 'if' condition: {e}") from e
+                if not condition:
+                    await render_model_output(
+                        f"** 🤖⏭️ Skipping task {task_name!r} (if condition is false)\n"
+                    )
+                    session.record_task(
+                        index=task_index,
+                        name=task_name,
+                        success=True,
+                        skipped=True,
+                        result_snapshot=store.snapshot(),
+                    )
+                    continue
 
             # Render prompt template (skip if repeat_prompt — result not yet available)
             if task_prompt and not repeat_prompt:
@@ -1064,7 +1094,6 @@ async def run_main(
                 # and errors after side-effectful work should not be retried
                 # blindly (e.g. repeat_prompt tasks may have already written
                 # data to external systems).
-                task_name = task.name or f"task-{task_index}"
                 task_complete = False
                 last_task_error: BaseException | None = None
 

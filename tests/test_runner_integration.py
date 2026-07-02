@@ -47,12 +47,27 @@ def _taskflow(task: TaskDefinition, globals_: dict | None = None) -> TaskflowDoc
     )
 
 
-def _run(monkeypatch, tmp_path, doc: TaskflowDocument) -> list[dict]:
+def _taskflow_tasks(tasks: list[TaskDefinition], globals_: dict | None = None) -> TaskflowDocument:
+    return TaskflowDocument(
+        **{
+            "seclab-taskflow-agent": TaskflowHeader(version="1.0", filetype="taskflow"),
+            "globals": globals_ or {},
+            "taskflow": [TaskWrapper(task=t) for t in tasks],
+        }
+    )
+
+
+def _run(monkeypatch, tmp_path, doc: TaskflowDocument, deploy_impl=None) -> list[dict]:
     """Run a taskflow with deploy patched; return the recorded deploy calls."""
     from seclab_taskflow_agent import runner
     from seclab_taskflow_agent.runner import run_main
 
     calls: list[dict] = []
+
+    async def default_deploy(available_tools, agents, prompt, *, model=None, record_tool_result=None, **kw):
+        if record_tool_result is not None:
+            await record_tool_result(ToolResult(text=json.dumps({"model": model, "prompt": prompt})))
+        return True
 
     async def fake_deploy(
         available_tools,
@@ -66,9 +81,10 @@ def _run(monkeypatch, tmp_path, doc: TaskflowDocument) -> list[dict]:
         **kw,
     ):
         calls.append({"prompt": prompt, "model": model, "label": stream_label})
-        if record_tool_result is not None:
-            await record_tool_result(ToolResult(text=json.dumps({"model": model, "prompt": prompt})))
-        return True
+        impl = deploy_impl or default_deploy
+        return await impl(
+            available_tools, agents, prompt, model=model, record_tool_result=record_tool_result, **kw
+        )
 
     monkeypatch.setattr(runner, "deploy_task_agents", fake_deploy)
     monkeypatch.setattr(runner, "start_watchdog", lambda: None)
@@ -80,6 +96,13 @@ def _run(monkeypatch, tmp_path, doc: TaskflowDocument) -> list[dict]:
 
     asyncio.run(run_main(at, None, "pkg.flow", {}, None))
     return calls
+
+
+def _session_data(tmp_path) -> dict:
+    files = glob.glob(str(tmp_path / "sessions" / "*.json"))
+    assert files, "no session file written"
+    latest = max(files, key=lambda p: Path(p).stat().st_mtime)
+    return json.loads(Path(latest).read_text())
 
 
 def _session_outputs(tmp_path) -> dict:
@@ -224,3 +247,54 @@ class TestOutputCaptureFailure:
         data = json.loads(Path(max(files, key=lambda p: Path(p).stat().st_mtime)).read_text())
         assert data.get("error")
         assert "output capture failed" in data["error"]
+
+
+class TestConditionalExecution:
+    """GitHub-Actions-style `if:` gates whether a task runs."""
+
+    def test_task_skipped_when_condition_false(self, monkeypatch, tmp_path):
+        task = TaskDefinition(agents=["pkg.p"], user_prompt="hi", **{"if": "globals.enabled"})
+        calls = _run(monkeypatch, tmp_path, _taskflow(task, globals_={"enabled": False}))
+        assert calls == []  # deploy never invoked
+        data = _session_data(tmp_path)
+        assert len(data["completed_tasks"]) == 1
+        assert data["completed_tasks"][0]["skipped"] is True
+
+    def test_task_runs_when_condition_true(self, monkeypatch, tmp_path):
+        task = TaskDefinition(agents=["pkg.p"], user_prompt="hi", **{"if": "globals.enabled"})
+        calls = _run(monkeypatch, tmp_path, _taskflow(task, globals_={"enabled": True}))
+        assert len(calls) == 1
+        assert _session_data(tmp_path)["completed_tasks"][0]["skipped"] is False
+
+    def test_condition_on_prior_task_output_runs(self, monkeypatch, tmp_path):
+        # task A produces findings; task B runs only if there are any.
+        a = TaskDefinition(id="audit", agents=["pkg.p"], user_prompt="audit")
+        b = TaskDefinition(agents=["pkg.p"], user_prompt="remediate", **{"if": "outputs.audit.findings"})
+        doc = _taskflow_tasks([a, b])
+
+        async def deploy(available_tools, agents, prompt, *, model=None, record_tool_result=None, **kw):
+            payload = {"findings": ["bug"]} if prompt == "audit" else {"ok": True}
+            if record_tool_result is not None:
+                await record_tool_result(ToolResult(text=json.dumps(payload)))
+            return True
+
+        calls = _run(monkeypatch, tmp_path, doc, deploy_impl=deploy)
+        # Both tasks ran (audit found something).
+        assert {c["prompt"] for c in calls} == {"audit", "remediate"}
+
+    def test_condition_on_prior_task_output_skips(self, monkeypatch, tmp_path):
+        a = TaskDefinition(id="audit", agents=["pkg.p"], user_prompt="audit")
+        b = TaskDefinition(agents=["pkg.p"], user_prompt="remediate", **{"if": "outputs.audit.findings"})
+        doc = _taskflow_tasks([a, b])
+
+        async def deploy(available_tools, agents, prompt, *, model=None, record_tool_result=None, **kw):
+            payload = {"findings": []} if prompt == "audit" else {"ok": True}
+            if record_tool_result is not None:
+                await record_tool_result(ToolResult(text=json.dumps(payload)))
+            return True
+
+        calls = _run(monkeypatch, tmp_path, doc, deploy_impl=deploy)
+        # Only the audit task ran; remediation was gated out.
+        assert [c["prompt"] for c in calls] == ["audit"]
+        data = _session_data(tmp_path)
+        assert data["completed_tasks"][1]["skipped"] is True

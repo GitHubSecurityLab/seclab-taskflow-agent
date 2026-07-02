@@ -205,3 +205,19 @@ class TestLintOverExpression:
         at = _at(doc)
         issues = lint_taskflow(at, "pkg.flow")
         assert not any(i.code == "template-syntax" for i in issues)
+
+
+class TestLintIfExpression:
+    """The linter checks `if` as an expression."""
+
+    def test_bad_if_expression_is_error(self):
+        doc = _taskflow([TaskDefinition(agents=["pkg.p"], user_prompt="hi", **{"if": "globals.x =="})])
+        at = _at(doc)
+        issues = lint_taskflow(at, "pkg.flow")
+        assert any(i.code == "template-syntax" for i in issues)
+
+    def test_valid_if_expression_ok(self):
+        doc = _taskflow([TaskDefinition(agents=["pkg.p"], user_prompt="hi", **{"if": "globals.x > 3"})])
+        at = _at(doc)
+        issues = lint_taskflow(at, "pkg.flow")
+        assert not any(i.code == "template-syntax" for i in issues)

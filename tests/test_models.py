@@ -175,6 +175,12 @@ class TestMultiModel:
 class TestTypedOutputs:
     """Test the typed named outputs grammar (id / outputs / over)."""
 
+    def test_conditional_if_field_alias(self):
+        """`if:` in YAML maps to the aliased if_ field; defaults to empty."""
+        t = TaskDefinition(**{"if": "globals.enabled", "user_prompt": "hi"})
+        assert t.if_ == "globals.enabled"
+        assert TaskDefinition(user_prompt="hi").if_ == ""
+
     def test_defaults(self):
         t = TaskDefinition(user_prompt="hi")
         assert t.id == ""
