@@ -154,3 +154,73 @@ class TestCrossProduct:
         # Records tagged by model and item index.
         tagged = {(r["model"], r["item"]) for r in records}
         assert tagged == {("m1", 0), ("m2", 0), ("m1", 1), ("m2", 1)}
+
+
+class TestModelConcurrencyBound:
+    def test_model_concurrency_limits_active_branches(self, monkeypatch, tmp_path):
+        """model_concurrency bounds how many branches run at once."""
+        from seclab_taskflow_agent import runner
+        from seclab_taskflow_agent.runner import run_main
+
+        active = 0
+        peak = 0
+
+        async def tracking_deploy(available_tools, agents, prompt, *, record_tool_result=None, **kw):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+            if record_tool_result is not None:
+                await record_tool_result(ToolResult(text="ok"))
+            return True
+
+        monkeypatch.setattr(runner, "deploy_task_agents", tracking_deploy)
+        monkeypatch.setattr(runner, "start_watchdog", lambda: None)
+        monkeypatch.setattr("seclab_taskflow_agent.session._data_dir", lambda: tmp_path)
+
+        task = TaskDefinition(
+            agents=["pkg.p"], user_prompt="hi", models=["m1", "m2", "m3", "m4"], model_concurrency=1
+        )
+        at = MagicMock()
+        at.get_taskflow.return_value = _taskflow(task)
+        at.get_personality.return_value = _personality()
+
+        asyncio.run(run_main(at, None, "pkg.flow", {}, None))
+        assert peak == 1
+
+
+class TestOutputCaptureFailure:
+    def test_schema_violation_marks_session_failed_and_raises(self, monkeypatch, tmp_path):
+        """A declared-but-violated output schema fails the run cleanly."""
+        from seclab_taskflow_agent import runner
+        from seclab_taskflow_agent.runner import run_main
+
+        async def fake_deploy(available_tools, agents, prompt, *, record_tool_result=None, **kw):
+            # produce a value that violates outputs: {items: list[str]}
+            if record_tool_result is not None:
+                await record_tool_result(ToolResult(text=json.dumps({"items": [1, 2, 3]})))
+            return True
+
+        monkeypatch.setattr(runner, "deploy_task_agents", fake_deploy)
+        monkeypatch.setattr(runner, "start_watchdog", lambda: None)
+        monkeypatch.setattr("seclab_taskflow_agent.session._data_dir", lambda: tmp_path)
+
+        task = TaskDefinition(id="x", agents=["pkg.p"], user_prompt="hi", outputs={"items": "list[str]"})
+        at = MagicMock()
+        at.get_taskflow.return_value = _taskflow(task)
+        at.get_personality.return_value = _personality()
+
+        raised = False
+        try:
+            asyncio.run(run_main(at, None, "pkg.flow", {}, None))
+        except Exception:
+            raised = True
+        assert raised, "run_main should propagate the capture failure"
+
+        # Session must be marked failed (not left silently clean).
+        files = glob.glob(str(tmp_path / "sessions" / "*.json"))
+        assert files
+        data = json.loads(Path(max(files, key=lambda p: Path(p).stat().st_mtime)).read_text())
+        assert data.get("error")
+        assert "output capture failed" in data["error"]

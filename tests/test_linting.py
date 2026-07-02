@@ -183,3 +183,25 @@ class TestFormatIssues:
         assert "ERROR" in out
         assert "WARNING" in out
         assert "1 error(s), 1 warning(s)" in out
+
+
+class TestLintOverExpression:
+    """The linter must check `over` as an expression, not a template."""
+
+    def test_bad_over_expression_is_error(self):
+        doc = _taskflow(
+            [TaskDefinition(agents=["pkg.p"], user_prompt="{{ result }}", repeat_prompt=True,
+                            over="globals.items | badfilter(")]
+        )
+        at = _at(doc)
+        issues = lint_taskflow(at, "pkg.flow")
+        assert any(i.code == "template-syntax" for i in issues)
+
+    def test_bare_over_expression_ok(self):
+        doc = _taskflow(
+            [TaskDefinition(agents=["pkg.p"], user_prompt="{{ result }}", repeat_prompt=True,
+                            over="globals.items")]
+        )
+        at = _at(doc)
+        issues = lint_taskflow(at, "pkg.flow")
+        assert not any(i.code == "template-syntax" for i in issues)

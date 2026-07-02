@@ -38,8 +38,9 @@ ApiType = Literal["chat_completions", "responses", "messages"]
 # Valid backend names. Must stay in sync with ``sdk._KNOWN``.
 BackendSdk = Literal["openai_agents", "copilot_sdk", "anthropic_sdk"]
 
-# Completion policy for multi-model tasks: whether all models must succeed
-# for the task to be considered complete, or any single success suffices.
+# Completion policy for a task's fan-out: whether every branch (each prompt x
+# model cell) must succeed for the task to be considered complete, or any
+# single branch succeeding is enough.
 CompletionPolicy = Literal["all", "any"]
 
 
@@ -126,9 +127,11 @@ class TaskDefinition(BaseModel):
     # parallel with per-model output streams. Mutually exclusive with the
     # singular ``model`` field. Empty means single-model (see ``model``).
     models: list[ModelEntry] = Field(default_factory=list)
-    # Completion policy when ``models`` lists more than one model.
+    # Completion policy for the task's fan-out (all prompt x model branches):
+    # "all" (default) requires every branch to succeed; "any" needs one.
     completion: CompletionPolicy = "all"
-    # Upper bound on concurrent model runs (0 = run all models at once).
+    # Upper bound on concurrent branch runs for a multi-model task
+    # (0 = run all models at once). Does not affect single-model tasks.
     model_concurrency: int = 0
     must_complete: bool = False
     headless: bool = False

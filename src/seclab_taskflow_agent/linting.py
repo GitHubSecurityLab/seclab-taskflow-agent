@@ -76,12 +76,32 @@ def _check_reference(loader, name: str, kind: str, location: str, ctx: _Ctx) -> 
 
 
 def _check_template(template_str: str, what: str, location: str, ctx: _Ctx) -> None:
-    """Report malformed Jinja syntax (does not render)."""
+    """Report malformed Jinja syntax in a template (does not render)."""
     if not template_str:
         return
     env = create_jinja_environment(ctx.available_tools)
     try:
         env.from_string(template_str)
+    except jinja2.TemplateSyntaxError as exc:
+        ctx.add("error", "template-syntax", f"invalid Jinja in {what}: {exc}", location)
+
+
+def _check_expression(expression: str, what: str, location: str, ctx: _Ctx) -> None:
+    """Report malformed Jinja in an *expression* (e.g. ``over``).
+
+    ``over`` is evaluated at runtime with ``compile_expression`` (matching
+    ``template_utils.evaluate_expression``), so it must be checked as an
+    expression, not a template - otherwise a bare ``globals.items`` looks like
+    literal text and no syntax error is ever reported.
+    """
+    if not expression:
+        return
+    expr = expression.strip()
+    if expr.startswith("{{") and expr.endswith("}}"):
+        expr = expr[2:-2].strip()
+    env = create_jinja_environment(ctx.available_tools)
+    try:
+        env.compile_expression(expr)
     except jinja2.TemplateSyntaxError as exc:
         ctx.add("error", "template-syntax", f"invalid Jinja in {what}: {exc}", location)
 
@@ -137,7 +157,7 @@ def _lint_task(task: TaskDefinition, location: str, ctx: _Ctx) -> None:
 
     # Prompt / over template syntax.
     _check_template(task.user_prompt, "user_prompt", location, ctx)
-    _check_template(task.over, "over", location, ctx)
+    _check_expression(task.over, "over", location, ctx)
 
 
 def lint_taskflow(

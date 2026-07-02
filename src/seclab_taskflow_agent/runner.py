@@ -987,16 +987,12 @@ async def run_main(
                                 _Branch(agents=ra, prompt=pp, rm=rm, item_index=item_index, label=label)
                             )
 
-                    # Concurrency: repeat_prompt async fans out over prompts;
-                    # multi-model fans out over models; the cross product is
-                    # bounded by model_concurrency * async_limit.
+                    # Concurrency: single-model repeat_prompt async fans out
+                    # over items bounded by async_limit; multi-model (including
+                    # the cross product) fans out over branches bounded by
+                    # model_concurrency (default: all models at once).
                     concurrent = async_task or multi_model
-                    if cross:
-                        concurrency = model_concurrency * max_concurrent_tasks
-                    elif multi_model:
-                        concurrency = model_concurrency
-                    else:
-                        concurrency = max_concurrent_tasks
+                    concurrency = model_concurrency if multi_model else max_concurrent_tasks
 
                     async def _deploy(branch: _Branch, rm: ResolvedModel) -> bool:
                         # Multi-model branches capture tool results into their
@@ -1124,11 +1120,24 @@ async def run_main(
                 # Capture this task's typed named output (M2). The task's
                 # output is its final tool result; when an ``outputs`` schema
                 # is declared it is validated/coerced before being stored under
-                # ``outputs.<id>`` for downstream tasks to consume by name.
+                # ``outputs.<id>`` for downstream tasks to consume by name. A
+                # declared output contract that the produced value violates is
+                # a hard failure, surfaced with the same session-saved / resume
+                # messaging as other task failures.
                 if task_output_id and not multi_model:
-                    _capture_task_output(
-                        store, task_output_id, task_output_schema, task_name
-                    )
+                    try:
+                        _capture_task_output(
+                            store, task_output_id, task_output_schema, task_name
+                        )
+                    except Exception as exc:
+                        logging.error("Task %r output capture failed: %s", task_name, exc)
+                        session.mark_failed(f"Task {task_name!r} output capture failed: {exc}")
+                        await render_model_output(
+                            f"** 🤖❗ Output capture failed: {exc}\n"
+                            f"** 🤖💾 Session saved: {session.session_id}\n"
+                            f"** 🤖💡 Resume with: --resume {session.session_id}\n"
+                        )
+                        raise
 
                 # Checkpoint after task (must_complete failures break above
                 # without advancing the resume cursor)

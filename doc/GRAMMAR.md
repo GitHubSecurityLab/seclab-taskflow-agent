@@ -149,11 +149,11 @@ Notes and semantics:
 - Per-entry `model_settings` support the same engine keys as `model_config`
   (`api_type`, `endpoint`, `token`, `backend`), so different models may run on
   different backends within one task.
-- `completion` controls when a multi-model task counts as complete: `all`
-  (default, every model must succeed) or `any` (one success suffices). This is
-  what `must_complete` checks against.
-- `model_concurrency` caps how many models run at once (default `0` runs them
-  all in parallel):
+- `completion` controls when the task counts as complete across its fan-out
+  branches: `all` (default, every branch must succeed) or `any` (one branch
+  succeeding is enough). This is what `must_complete` checks against.
+- `model_concurrency` caps how many branches run at once for a multi-model
+  task (default `0` runs all models in parallel):
 
 ```yaml
   - task:
@@ -169,8 +169,8 @@ Notes and semantics:
 - Multi-model output is buffered per model and flushed as a labelled block when
   each model finishes, so streams from different models do not interleave.
 - `models` can be combined with `repeat_prompt`: the task runs the cross
-  product of items x models concurrently, bounded by
-  `model_concurrency * async_limit`. Each branch is streamed as its own block
+  product of items x models concurrently, bounded by `model_concurrency`
+  (default: all branches at once). Each branch is streamed as its own block
   labelled `<model> [item <n>]`.
 - Multi-model tool results are not threaded into the implicit last-tool-result
   channel that the next task's `repeat_prompt` reads (that stays deterministic).
