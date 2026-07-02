@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import jinja2
+from pydantic import ValidationError
 
 from ._stream import drive_backend_stream
 from ._watchdog import start_watchdog, watchdog_ping
@@ -233,6 +234,13 @@ class _Branch:
     item_index: int
     label: str
     sink: list[ToolResult] = field(default_factory=list)
+    # Typed multi-model output: when the task declares an ``outputs`` schema,
+    # each branch's result is validated and the coerced value stored here
+    # (``None`` when the branch failed or violated the schema). ``output_set``
+    # marks that validation ran so fan-in uses this value instead of decoding
+    # the raw sink.
+    output: Any = None
+    output_set: bool = False
 
 
 def _aggregate_fanin(branches: list[_Branch]) -> list[dict[str, Any]]:
@@ -241,19 +249,65 @@ def _aggregate_fanin(branches: list[_Branch]) -> list[dict[str, Any]]:
     Produces one record per branch: ``{"model": <label>, "item": <index>,
     "result": <value>}``. ``result`` is the decoded final tool result of the
     branch (its raw text when not JSON, or ``None`` when the branch produced no
-    tool result). Used to expose multi-model / cross-product outputs to later
-    tasks as ``outputs.<id>``.
+    tool result). When the task declares an ``outputs`` schema, ``result`` is
+    the per-branch validated/coerced value instead (``None`` for a branch that
+    failed or violated the schema). Used to expose multi-model / cross-product
+    outputs to later tasks as ``outputs.<id>``.
     """
     records: list[dict[str, Any]] = []
     for branch in branches:
-        value: Any = None
-        if branch.sink:
-            try:
-                value = decode_tool_result(branch.sink[-1])
-            except ValueError:
-                value = branch.sink[-1].text
+        if branch.output_set:
+            value: Any = branch.output
+        else:
+            value = None
+            if branch.sink:
+                try:
+                    value = decode_tool_result(branch.sink[-1])
+                except ValueError:
+                    value = branch.sink[-1].text
         records.append({"model": branch.rm.label, "item": branch.item_index, "result": value})
     return records
+
+
+def _capture_branch_output(
+    branch: _Branch,
+    schema: dict[str, Any],
+    output_id: str,
+    *,
+    agent_ok: bool,
+) -> bool:
+    """Validate one multi-model branch's result against the task's outputs schema.
+
+    Stores the coerced value on ``branch.output`` (``None`` when the branch
+    failed to run or its result violates the contract) and returns whether the
+    branch both ran and produced a schema-valid result. A contract violation is
+    therefore surfaced as a failed branch, which the task's ``completion`` policy
+    (``all`` / ``any``) reduces like any other branch failure.
+    """
+    branch.output_set = True
+    branch.output = None
+    if not agent_ok:
+        return False
+    if not branch.sink:
+        logging.error(
+            "Multi-model branch %r produced no result to validate against 'outputs'",
+            branch.label,
+        )
+        return False
+    try:
+        value = decode_tool_result(branch.sink[-1])
+    except ValueError:
+        value = branch.sink[-1].text
+    try:
+        branch.output = validate_output(schema, value, model_name=f"{output_id}_output")
+        return True
+    except (ValidationError, ValueError) as exc:
+        logging.error(
+            "Multi-model branch %r output violated 'outputs' schema: %s",
+            branch.label,
+            exc,
+        )
+        return False
 
 
 def _resolve_task_models(
@@ -1078,7 +1132,7 @@ async def run_main(
                                 on_tool_end=on_tool_end_hook, on_tool_start=on_tool_start_hook
                             )
                             branch_record = record_tool_result
-                        return await deploy_task_agents(
+                        branch_ok = await deploy_task_agents(
                             available_tools,
                             branch.agents,
                             branch.prompt,
@@ -1100,6 +1154,19 @@ async def run_main(
                             agent_hooks=TaskAgentHooks(on_handoff=on_handoff_hook),
                             stream_label=branch.label if multi_model else None,
                         )
+                        # Typed multi-model output: validate this branch's
+                        # result against the task's `outputs` schema. A missing
+                        # or schema-violating result makes it a failed branch,
+                        # folded into the completion policy alongside run
+                        # failures; the coerced value feeds fan-in.
+                        if multi_model and task_output_schema:
+                            return _capture_branch_output(
+                                branch,
+                                task_output_schema,
+                                task_output_id or task_name,
+                                agent_ok=branch_ok,
+                            )
+                        return branch_ok
 
                     work_items = [(branch, branch.rm) for branch in branches]
                     complete = await _fan_out_deploys(

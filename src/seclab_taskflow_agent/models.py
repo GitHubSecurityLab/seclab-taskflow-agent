@@ -207,11 +207,6 @@ class TaskDefinition(BaseModel):
                 build_output_model(f"{self.id or self.name or 'task'}_output", self.outputs)
             except OutputSchemaError as exc:
                 raise ValueError(f"invalid 'outputs' schema: {exc}") from exc
-            if len(self.models) > 1:
-                raise ValueError(
-                    "'outputs' schema is not yet supported on multi-model tasks; "
-                    "use 'id' to fan-in per-model results as a list"
-                )
         if self.over and not self.repeat_prompt:
             raise ValueError("'over' only applies to repeat_prompt tasks")
         return self

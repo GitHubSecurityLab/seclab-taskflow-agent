@@ -220,9 +220,12 @@ class TestTypedOutputs:
         )
         assert t.over == "outputs.x.items"
 
-    def test_outputs_schema_rejected_on_multi_model(self):
-        with pytest.raises(ValidationError, match="not yet supported on multi-model"):
-            TaskDefinition(user_prompt="hi", models=["a", "b"], outputs={"f": "str"})
+    def test_outputs_schema_allowed_on_multi_model(self):
+        # Typed outputs are now supported on multi-model tasks: the schema is
+        # applied per branch (see runner fan-in), so construction must succeed.
+        t = TaskDefinition(user_prompt="hi", models=["a", "b"], outputs={"f": "str"})
+        assert t.outputs == {"f": "str"}
+        assert [e.model for e in t.models] == ["a", "b"]
 
 
 class TestTaskflowDocument:

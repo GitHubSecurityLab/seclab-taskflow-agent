@@ -354,3 +354,60 @@ class TestConditionalUndefined:
         data = _session_data(tmp_path)
         assert data["finished"] is True
         assert all(t["skipped"] for t in data["completed_tasks"])
+
+
+class TestTypedMultiModelOutputs:
+    """Typed `outputs` schema applied per branch on multi-model tasks."""
+
+    @staticmethod
+    def _valid_deploy():
+        async def _impl(available_tools, agents, prompt, *, model=None, record_tool_result=None, **kw):
+            if record_tool_result is not None:
+                await record_tool_result(ToolResult(text=json.dumps({"score": 7})))
+            return True
+
+        return _impl
+
+    @staticmethod
+    def _mixed_deploy():
+        # m1 satisfies the schema; every other model violates it (missing `score`).
+        async def _impl(available_tools, agents, prompt, *, model=None, record_tool_result=None, **kw):
+            if record_tool_result is not None:
+                payload = {"score": 1} if model == "m1" else {"wrong": "x"}
+                await record_tool_result(ToolResult(text=json.dumps(payload)))
+            return True
+
+        return _impl
+
+    def test_typed_fanin_validates_each_branch(self, monkeypatch, tmp_path):
+        task = TaskDefinition(
+            id="cmp", agents=["pkg.p"], user_prompt="score X",
+            models=["m1", "m2"], outputs={"score": "int"},
+        )
+        _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=self._valid_deploy())
+        records = _session_outputs(tmp_path)["cmp"]
+        assert [r["model"] for r in records] == ["m1", "m2"]
+        # Each branch result is the validated/coerced schema value, not the raw envelope.
+        assert all(r["result"] == {"score": 7} for r in records)
+        assert _session_data(tmp_path)["completed_tasks"][0]["result"] is True
+
+    def test_schema_violation_fails_branch_completion_all(self, monkeypatch, tmp_path):
+        task = TaskDefinition(
+            id="cmp", agents=["pkg.p"], user_prompt="score X",
+            models=["m1", "m2"], outputs={"score": "int"}, completion="all",
+        )
+        _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=self._mixed_deploy())
+        by_model = {r["model"]: r["result"] for r in _session_outputs(tmp_path)["cmp"]}
+        assert by_model["m1"] == {"score": 1}
+        assert by_model["m2"] is None  # violating branch stored as None
+        # completion=all: the invalid branch fails the whole task.
+        assert _session_data(tmp_path)["completed_tasks"][0]["result"] is False
+
+    def test_schema_violation_tolerated_completion_any(self, monkeypatch, tmp_path):
+        task = TaskDefinition(
+            id="cmp", agents=["pkg.p"], user_prompt="score X",
+            models=["m1", "m2"], outputs={"score": "int"}, completion="any",
+        )
+        _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=self._mixed_deploy())
+        # completion=any: one schema-valid branch is enough for task success.
+        assert _session_data(tmp_path)["completed_tasks"][0]["result"] is True

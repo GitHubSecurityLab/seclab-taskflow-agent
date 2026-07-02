@@ -177,8 +177,11 @@ Notes and semantics:
   To consume multi-model results downstream, give the task an `id`: each
   branch's final result is aggregated into `outputs.<id>` as a list of records
   `{"model": ..., "item": ..., "result": ...}` (see "Typed named outputs").
-- The inline `outputs` schema is not yet supported on multi-model tasks (the
-  aggregate is a list of records); use `id` for fan-in.
+- The inline `outputs` schema is applied per branch on multi-model tasks: each
+  branch's result is validated/coerced against the schema and stored as the
+  `result` of its fan-in record. A branch whose result violates the schema is
+  treated as a failed branch, which the `completion` policy (`all`/`any`) then
+  reduces like any other branch failure (see "Typed named outputs").
 
 ### Completion Requirement
 
@@ -456,8 +459,10 @@ Notes:
 - Without `id`/`outputs`/`over`, the implicit last-tool-result `repeat_prompt`
   behaviour is unchanged.
 - On multi-model tasks, `id` fans in per-branch results as a list of
-  `{model, item, result}` records (see "Multiple Models"); the inline `outputs`
-  schema is not yet supported there.
+  `{model, item, result}` records (see "Multiple Models"). When an `outputs`
+  schema is present it is applied per branch: each `result` is the validated
+  value, and a branch that violates the schema is treated as a failed branch
+  under the task's `completion` policy.
 
 ### Toolboxes / MCP Servers
 
