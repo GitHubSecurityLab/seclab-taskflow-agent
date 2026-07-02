@@ -105,3 +105,15 @@ class TestSchemaErrors:
         # extra="allow": unknown fields in the value are kept
         out = validate_output({"name": "str"}, {"name": "f", "extra": 1})
         assert out["extra"] == 1
+
+
+class TestTypeKeyScalar:
+    """A scalar declared via the {type: X} mapping form is supported."""
+
+    def test_scalar_via_type_key(self):
+        out = validate_output({"n": {"type": "int"}}, {"n": 5})
+        assert out["n"] == 5
+
+    def test_unknown_type_key_raises(self):
+        with pytest.raises(OutputSchemaError, match="unsupported type"):
+            build_output_model("m", {"n": {"type": "nope"}})

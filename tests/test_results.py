@@ -151,3 +151,15 @@ class TestResultStore:
         s = ResultStore.from_snapshot(None)
         assert s.last() is None
         assert s.outputs == {}
+
+
+class TestTopLevelStringResult:
+    """A JSON string result normalizes to text (results.py normalization)."""
+
+    def test_top_level_json_string_becomes_text(self):
+        tr = normalize_openai_tool_output('"just a string"')
+        assert tr.text == "just a string"
+        assert tr.structured is None
+        # Plain text that is not itself JSON is not re-decodable as JSON.
+        with pytest.raises(ValueError, match="not valid JSON"):
+            decode_tool_result(tr)
