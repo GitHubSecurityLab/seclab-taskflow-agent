@@ -13,9 +13,11 @@ from __future__ import annotations
 
 __all__ = [
     "TaskflowSession",
+    "artifacts_dir",
     "session_dir",
 ]
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -33,6 +35,13 @@ def session_dir() -> Path:
     return d
 
 
+def artifacts_dir(session_id: str) -> Path:
+    """Return (and create) the run-scoped artifacts directory for a session."""
+    d = _data_dir() / "artifacts" / session_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 class CompletedTask(BaseModel):
     """Record of a single completed task within a session."""
 
@@ -40,6 +49,11 @@ class CompletedTask(BaseModel):
     name: str = ""
     result: bool = False
     skipped: bool = False
+    # Resolved model labels this task ran against (one for single-model tasks,
+    # several for multi-model). Empty for shell tasks.
+    models: list[str] = Field(default_factory=list)
+    # Wall-clock duration of the task in seconds.
+    duration_s: float = 0.0
 
 
 class TaskflowSession(BaseModel):
@@ -55,6 +69,7 @@ class TaskflowSession(BaseModel):
     prompt: str = ""
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = ""
+    finished_at: str = ""
     completed_tasks: list[CompletedTask] = Field(default_factory=list)
     total_tasks: int = 0
     finished: bool = False
@@ -94,6 +109,8 @@ class TaskflowSession(BaseModel):
         success: bool,
         result_snapshot: dict | None = None,
         skipped: bool = False,
+        models: list[str] | None = None,
+        duration_s: float = 0.0,
     ) -> None:
         """Record a completed (or skipped) task and save the checkpoint."""
         self.completed_tasks.append(
@@ -102,6 +119,8 @@ class TaskflowSession(BaseModel):
                 name=name,
                 result=success,
                 skipped=skipped,
+                models=models or [],
+                duration_s=duration_s,
             )
         )
         if result_snapshot is not None:
@@ -109,14 +128,65 @@ class TaskflowSession(BaseModel):
         self.save()
 
     def mark_finished(self) -> None:
-        """Mark the session as fully completed and save."""
+        """Mark the session as fully completed, write the manifest, and save."""
         self.finished = True
+        self.finished_at = datetime.now(timezone.utc).isoformat()
         self.save()
+        self.write_manifest()
 
     def mark_failed(self, error: str) -> None:
-        """Mark the session as failed with an error message and save."""
+        """Mark the session as failed, write the manifest, and save."""
         self.error = error
+        self.finished_at = datetime.now(timezone.utc).isoformat()
         self.save()
+        self.write_manifest()
+
+    @property
+    def status(self) -> str:
+        """Coarse run status: ``finished`` / ``failed`` / ``in_progress``."""
+        if self.finished:
+            return "finished"
+        if self.error:
+            return "failed"
+        return "in_progress"
+
+    def manifest(self) -> dict:
+        """Return a stable, machine-readable summary of the run.
+
+        This is a curated audit view of the checkpoint: per-task status, the
+        models each task ran against, timing, and the named outputs (which
+        include per-model fan-in records for multi-model tasks). It contains no
+        endpoints or tokens.
+        """
+        return {
+            "session_id": self.session_id,
+            "taskflow": self.taskflow_path,
+            "model_config": self.cli_model_config or None,
+            "status": self.status,
+            "error": self.error or None,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "finished_at": self.finished_at or None,
+            "total_tasks": self.total_tasks,
+            "tasks": [
+                {
+                    "index": t.index,
+                    "name": t.name,
+                    "status": "skipped" if t.skipped else ("ok" if t.result else "failed"),
+                    "models": t.models,
+                    "duration_s": round(t.duration_s, 3),
+                }
+                for t in self.completed_tasks
+            ],
+            "outputs": (self.result_snapshot or {}).get("outputs", {}),
+        }
+
+    def write_manifest(self) -> Path:
+        """Write the run manifest to the run-scoped artifacts directory."""
+        path = artifacts_dir(self.session_id) / "manifest.json"
+        path.write_text(json.dumps(self.manifest(), indent=2))
+        logging.debug("Run manifest written: %s", path)
+        return path
 
     @classmethod
     def load(cls, session_id: str) -> TaskflowSession:

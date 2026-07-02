@@ -298,3 +298,22 @@ class TestConditionalExecution:
         assert [c["prompt"] for c in calls] == ["audit"]
         data = _session_data(tmp_path)
         assert data["completed_tasks"][1]["skipped"] is True
+
+
+class TestRunManifest:
+    def test_run_writes_manifest_with_models_and_status(self, monkeypatch, tmp_path):
+        from seclab_taskflow_agent.session import artifacts_dir
+
+        task = TaskDefinition(id="cmp", agents=["pkg.p"], user_prompt="hi", models=["m1", "m2"])
+        _run(monkeypatch, tmp_path, _taskflow(task))
+
+        data = _session_data(tmp_path)
+        sid = data["session_id"]
+        manifest_path = artifacts_dir(sid) / "manifest.json"
+        assert manifest_path.exists()
+        manifest = json.loads(manifest_path.read_text())
+        assert manifest["status"] == "finished"
+        assert manifest["tasks"][0]["models"] == ["m1", "m2"]
+        assert manifest["tasks"][0]["status"] == "ok"
+        # fan-in outputs surfaced in the manifest
+        assert "cmp" in manifest["outputs"]

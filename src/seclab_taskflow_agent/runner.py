@@ -21,6 +21,7 @@ __all__ = [
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -1096,6 +1097,7 @@ async def run_main(
                 # data to external systems).
                 task_complete = False
                 last_task_error: BaseException | None = None
+                task_started = time.monotonic()
 
                 for attempt in range(TASK_RETRY_LIMIT):
                     try:
@@ -1175,6 +1177,8 @@ async def run_main(
                     name=task_name,
                     success=task_complete,
                     result_snapshot=store.snapshot(),
+                    models=[] if run else [rm.label for rm in resolved_models],
+                    duration_s=time.monotonic() - task_started,
                 )
 
         # All tasks completed successfully

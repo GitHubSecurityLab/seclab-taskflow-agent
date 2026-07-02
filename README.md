@@ -160,6 +160,20 @@ Failed tasks are automatically retried up to 3 times with increasing backoff
 before the session is saved. Session checkpoints are stored in the
 platform-specific application data directory.
 
+### Run Manifest
+
+Every run produces a machine-readable manifest summarising what happened:
+per-task status (ok / failed / skipped), the models each task ran against,
+timing, and the named `outputs` each task produced (including per-model fan-in
+records for multi-model tasks). It contains no endpoints or tokens.
+
+The manifest is written to a run-scoped artifacts directory when a run finishes
+or fails, and can be printed for any session by ID:
+
+```bash
+python -m seclab_taskflow_agent --manifest abc123def456
+```
+
 ### Error Output
 
 By default, errors are shown as concise one-line messages. Use `--debug` (or

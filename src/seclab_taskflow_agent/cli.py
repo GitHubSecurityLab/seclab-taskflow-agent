@@ -97,6 +97,21 @@ def _dump_schemas() -> None:
     typer.echo(json.dumps(schemas, indent=2))
 
 
+def _print_manifest(session_id: str) -> int:
+    """Print a session's run manifest as JSON. Returns a process exit code."""
+    import json
+
+    from .session import TaskflowSession
+
+    try:
+        session = TaskflowSession.load(session_id)
+    except FileNotFoundError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        return 1
+    typer.echo(json.dumps(session.manifest(), indent=2))
+    return 0
+
+
 @app.command()
 def main(
     personality: Annotated[
@@ -143,6 +158,10 @@ def main(
         bool,
         typer.Option("--schema", help="Print the JSON Schema for each grammar document type and exit."),
     ] = False,
+    manifest: Annotated[
+        str | None,
+        typer.Option("--manifest", help="Print the run manifest for a session ID and exit."),
+    ] = None,
 ) -> None:
     """Run a taskflow or personality-based agent session."""
     # Debug mode from flag or env var
@@ -166,6 +185,10 @@ def main(
     if dump_schema:
         _dump_schemas()
         raise typer.Exit()
+
+    # Manifest mode: print a session's run manifest and exit.
+    if manifest:
+        raise typer.Exit(code=_print_manifest(manifest))
 
     # Lint mode (no model calls)
     if lint:
