@@ -411,13 +411,23 @@ that later tasks consume by name.
 
 Three fields drive this:
 
-- `id` names a task. Its produced value (its final tool result) is exposed to
-  later tasks as `outputs.<id>`.
+- `id` names a task, exposing its output to later tasks as `outputs.<id>`. The
+  shape depends on whether the task fans out:
+  - A plain task (single model, no `repeat_prompt`) publishes its single
+    produced value (its final tool result).
+  - A task that fans out (`repeat_prompt`, multiple `models`, or their cross
+    product) publishes a per-branch fan-in list of
+    `{"model": <label>, "item": <index>, "result": <value>}` records, one per
+    branch. This is uniform across the item axis and the model axis, so a
+    single-model `repeat_prompt` and a multi-model task capture the same way.
 - `outputs` declares an inline JSON Schema (Draft 2020-12). When present, the
   task's value is validated against it before being stored. Validation is strict
   and does not coerce, so a value whose types do not match the contract is a
-  failure. A malformed schema is rejected when the taskflow is loaded, before
-  any model calls are made.
+  failure. On a fan-out task the schema is applied to each branch's `result`
+  (a violation is a failed branch under the `completion` policy); on a plain
+  task it is applied to the single value (a violation is a hard failure). A
+  malformed schema is rejected when the taskflow is loaded, before any model
+  calls are made.
 - `over` is an explicit iterable selector for `repeat_prompt`: a Jinja
   expression evaluated against the template context (so it yields a real list,
   not a re-parsed string).
@@ -473,11 +483,10 @@ Notes:
   `values`, ...) resolve to your data, not the method.
 - Without `id`/`outputs`/`over`, the implicit last-tool-result `repeat_prompt`
   behaviour is unchanged.
-- On multi-model tasks, `id` fans in per-branch results as a list of
-  `{model, item, result}` records (see "Multiple Models"). When an `outputs`
-  schema is present it is applied per branch: each `result` is the validated
-  value, and a branch that violates the schema is treated as a failed branch
-  under the task's `completion` policy.
+- Implicit carry-over (the next task's `repeat_prompt` reading the previous
+  task's last tool result) is fed by single-model tasks only. A multi-model
+  task does not feed it: there is no single "last" result across models, so a
+  downstream task must consume its output by name via `id`/`over`.
 
 ### Toolboxes / MCP Servers
 

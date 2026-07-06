@@ -243,6 +243,42 @@ class _Branch:
     output_set: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Task result/output capture model (unified across repeat_prompt + multi-model)
+#
+# Every prompt task fans out into one or more branches: the cross product of
+# the prompts to run (one for a plain task, N for ``repeat_prompt``) and the
+# resolved models (one for a single-model task, M for a multi-model task). Each
+# branch captures its own tool results into an isolated ``_Branch.sink`` (never
+# the shared store), so concurrent branches never interleave and capture is the
+# same shape regardless of which axis (items, models, or both) fanned out.
+#
+# After the branches run, the runner does two things:
+#
+#  1. Carry-over projection. For single-model tasks it replays the branch sinks
+#     into the shared run ``store`` in branch order, so the legacy implicit
+#     last-tool-result carry-over, the run-level result list, and the session
+#     snapshot behave exactly as before (and deterministically, even for async
+#     ``repeat_prompt``). Multi-model tasks are deliberately excluded: there is
+#     no well-defined "last" result across models, so their results are consumed
+#     by name via ``id``/``over``, not the implicit channel.
+#
+#  2. Named-output capture (``outputs.<id>``), by whether the task fanned out:
+#       - does NOT fan out (plain single-model task) -> the single decoded value
+#         (validated against the ``outputs`` schema here; a violation is a hard
+#         task failure). See :func:`_capture_task_output`.
+#       - fans out (``repeat_prompt`` or multiple models) -> the per-branch
+#         fan-in list ``[{model, item, result}]`` (each ``result`` validated
+#         per branch during the run; a violation is a failed branch reduced by
+#         the ``completion`` policy). See :func:`_aggregate_fanin` /
+#         :func:`_capture_branch_output`.
+#
+# "Fans out" is structural (``repeat_prompt or multi_model``), not a runtime
+# count, so a ``repeat_prompt`` over one item is still a one-element list rather
+# than surprising the author with a scalar.
+# ---------------------------------------------------------------------------
+
+
 def _aggregate_fanin(branches: list[_Branch]) -> list[dict[str, Any]]:
     """Aggregate each branch's final tool result into fan-in records.
 
@@ -980,6 +1016,13 @@ async def run_main(
             toolboxes_override = task.toolboxes or []
             env = task.env or {}
             repeat_prompt = task.repeat_prompt
+            # A task "fans out" when it runs more than one branch by intent:
+            # a repeat_prompt (over items) or a multi-model task (over models),
+            # or their cross product. This drives the unified output-capture
+            # model (see the capture design note above ``_aggregate_fanin``):
+            # a task that fans out yields a per-branch fan-in list, one that
+            # does not yields a single value.
+            fans_out = multi_model or repeat_prompt
             exclude_from_context = task.exclude_from_context
             async_task = task.async_task
             max_concurrent_tasks = task.async_limit
@@ -1053,6 +1096,11 @@ async def run_main(
                     outputs=store.outputs, over=over,
                 )
 
+                # run_prompts hands the branches it built back to the task loop
+                # (via this closure var) so projection + output capture happen
+                # once, after the retry loop, rather than per attempt.
+                captured_branches: list[_Branch] = []
+
                 async def run_prompts(async_task: bool = False, max_concurrent_tasks: int = 5) -> bool:
                     if run:
                         await render_model_output("** 🤖🐚 Executing Shell Task\n")
@@ -1112,31 +1160,26 @@ async def run_main(
                     concurrency = model_concurrency if multi_model else max_concurrent_tasks
 
                     async def _deploy(branch: _Branch, rm: ResolvedModel) -> bool:
-                        # Multi-model branches capture tool results into their
-                        # own private sink (never the shared store), keeping
-                        # concurrent branches isolated and enabling fan-in.
-                        # Single-model runs keep the shared sink for backwards
-                        # compatibility.
-                        if multi_model:
-                            async def _branch_tool_end(context, agent, tool, result) -> None:  # noqa: ANN001
-                                watchdog_ping()
-                                branch.sink.append(
-                                    normalize_openai_tool_output(result, tool_name=getattr(tool, "name", ""))
-                                )
-
-                            async def _branch_record(tr: ToolResult) -> None:
-                                watchdog_ping()
-                                branch.sink.append(tr)
-
-                            run_hooks = TaskRunHooks(
-                                on_tool_end=_branch_tool_end, on_tool_start=on_tool_start_hook
+                        # Every branch captures its tool results into its own
+                        # isolated sink (never the shared store) so concurrent
+                        # branches never interleave and capture is uniform across
+                        # repeat_prompt and multi-model. Single-model results are
+                        # projected back into the shared store after the fan-out
+                        # (see the projection step in the task loop).
+                        async def _branch_tool_end(context, agent, tool, result) -> None:  # noqa: ANN001
+                            watchdog_ping()
+                            branch.sink.append(
+                                normalize_openai_tool_output(result, tool_name=getattr(tool, "name", ""))
                             )
-                            branch_record = _branch_record
-                        else:
-                            run_hooks = TaskRunHooks(
-                                on_tool_end=on_tool_end_hook, on_tool_start=on_tool_start_hook
-                            )
-                            branch_record = record_tool_result
+
+                        async def _branch_record(tr: ToolResult) -> None:
+                            watchdog_ping()
+                            branch.sink.append(tr)
+
+                        run_hooks = TaskRunHooks(
+                            on_tool_end=_branch_tool_end, on_tool_start=on_tool_start_hook
+                        )
+                        branch_record = _branch_record
                         branch_ok = await deploy_task_agents(
                             available_tools,
                             branch.agents,
@@ -1159,12 +1202,15 @@ async def run_main(
                             agent_hooks=TaskAgentHooks(on_handoff=on_handoff_hook),
                             stream_label=branch.label if multi_model else None,
                         )
-                        # Typed multi-model output: validate this branch's
-                        # result against the task's `outputs` schema. A missing
-                        # or schema-violating result makes it a failed branch,
+                        # Typed fan-out output: when the task fans out (repeat
+                        # and/or multi-model) and declares an `outputs` schema,
+                        # validate this branch's result against it. A missing or
+                        # schema-violating result makes it a failed branch,
                         # folded into the completion policy alongside run
-                        # failures; the validated value feeds fan-in.
-                        if multi_model and task_output_schema:
+                        # failures; the validated value feeds fan-in. (A plain,
+                        # non-fan-out task validates its single value later, in
+                        # the capture step.)
+                        if fans_out and task_output_schema:
                             return _capture_branch_output(
                                 branch,
                                 task_output_schema,
@@ -1181,11 +1227,10 @@ async def run_main(
                         completion_policy=completion_policy,
                     )
 
-                    # Fan-in: expose each branch's final result as a named list
-                    # for downstream tasks (multi-model / cross-product only;
-                    # single-model typed-output capture happens in run_main).
-                    if multi_model and task_output_id:
-                        store.set_output(task_output_id, _aggregate_fanin(branches))
+                    # Hand the branches back to the task loop for projection +
+                    # output capture (done once, after the retry loop).
+                    nonlocal captured_branches
+                    captured_branches = branches
 
                     return complete
 
@@ -1252,27 +1297,43 @@ async def run_main(
                     # --resume.
                     raise RuntimeError(f"Required task {task_name!r} did not complete")
 
-                # Capture this task's typed named output (M2). The task's
-                # output is its final tool result; when an ``outputs`` schema
-                # is declared it is validated before being stored under
-                # ``outputs.<id>`` for downstream tasks to consume by name. A
-                # declared output contract that the produced value violates is
-                # a hard failure, surfaced with the same session-saved / resume
-                # messaging as other task failures.
-                if task_output_id and not multi_model:
-                    try:
-                        _capture_task_output(
-                            store, task_output_id, task_output_schema, task_name
-                        )
-                    except Exception as exc:
-                        logging.error("Task %r output capture failed: %s", task_name, exc)
-                        session.mark_failed(f"Task {task_name!r} output capture failed: {exc}")
-                        await render_model_output(
-                            f"** 🤖❗ Output capture failed: {exc}\n"
-                            f"** 🤖💾 Session saved: {session.session_id}\n"
-                            f"** 🤖💡 Resume with: --resume {session.session_id}\n"
-                        )
-                        raise
+                # Projection: replay this task's per-branch tool results into the
+                # shared run store (single-model only) so the implicit
+                # last-tool-result carry-over, the run-level result list, and the
+                # session snapshot behave as before, and deterministically in
+                # branch order even for async repeat_prompt. Multi-model tasks
+                # are excluded on purpose (no well-defined "last" across models;
+                # consume them by name via id/over). Shell tasks have no branches
+                # and already wrote their result to the store directly.
+                if not multi_model:
+                    for _branch in captured_branches:
+                        for _tr in _branch.sink:
+                            store.record(_tr)
+
+                # Capture this task's typed named output, uniform across single-
+                # and multi-model (see the capture design note above
+                # ``_aggregate_fanin``). A task that fans out (repeat_prompt or
+                # multiple models) publishes the per-branch fan-in list; a plain
+                # task publishes its single value, validated against the
+                # ``outputs`` schema here (a violation is a hard failure, with
+                # the same session-saved / resume messaging as other failures).
+                if task_output_id:
+                    if fans_out:
+                        store.set_output(task_output_id, _aggregate_fanin(captured_branches))
+                    else:
+                        try:
+                            _capture_task_output(
+                                store, task_output_id, task_output_schema, task_name
+                            )
+                        except Exception as exc:
+                            logging.error("Task %r output capture failed: %s", task_name, exc)
+                            session.mark_failed(f"Task {task_name!r} output capture failed: {exc}")
+                            await render_model_output(
+                                f"** 🤖❗ Output capture failed: {exc}\n"
+                                f"** 🤖💾 Session saved: {session.session_id}\n"
+                                f"** 🤖💡 Resume with: --resume {session.session_id}\n"
+                            )
+                            raise
 
                 # Checkpoint after task (must_complete failures break above
                 # without advancing the resume cursor)

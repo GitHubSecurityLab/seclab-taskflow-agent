@@ -444,3 +444,73 @@ class TestMustCompleteFailure:
         data = _session_data(tmp_path)
         assert data["finished"] is False
         assert "did not complete" in data["error"]
+
+
+class TestUnifiedCapture:
+    """The unified capture model: repeat_prompt and multi-model both fan in,
+    plain tasks stay scalar, and single-model results still feed carry-over."""
+
+    def test_single_model_repeat_fans_in_per_item(self, monkeypatch, tmp_path):
+        async def deploy(available_tools, agents, prompt, *, model=None, record_tool_result=None, **kw):
+            if record_tool_result is not None:
+                await record_tool_result(ToolResult(text=json.dumps({"echo": prompt})))
+            return True
+
+        task = TaskDefinition(
+            id="items", agents=["pkg.p"], user_prompt="do {{ result }}",
+            repeat_prompt=True, over="globals.xs",
+        )
+        _run(monkeypatch, tmp_path, _taskflow(task, globals_={"xs": ["a", "b", "c"]}), deploy_impl=deploy)
+        records = _session_outputs(tmp_path)["items"]
+        # A per-item fan-in list (previously only the last item was captured).
+        assert [r["item"] for r in records] == [0, 1, 2]
+        assert records[0]["result"] == {"echo": "do a"}
+        assert records[2]["result"] == {"echo": "do c"}
+
+    def test_plain_single_task_output_is_scalar(self, monkeypatch, tmp_path):
+        async def deploy(available_tools, agents, prompt, *, model=None, record_tool_result=None, **kw):
+            if record_tool_result is not None:
+                await record_tool_result(ToolResult(text=json.dumps({"answer": 42})))
+            return True
+
+        task = TaskDefinition(id="v", agents=["pkg.p"], user_prompt="hi")
+        _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=deploy)
+        # A task that does not fan out publishes its single value, not a list.
+        assert _session_outputs(tmp_path)["v"] == {"answer": 42}
+
+    def test_single_model_result_feeds_implicit_carryover(self, monkeypatch, tmp_path):
+        calls: list[str] = []
+
+        async def deploy(available_tools, agents, prompt, *, model=None, record_tool_result=None, **kw):
+            calls.append(prompt)
+            if record_tool_result is not None:
+                payload = ["x", "y"] if prompt.startswith("produce") else {"echo": prompt}
+                await record_tool_result(ToolResult(text=json.dumps(payload)))
+            return True
+
+        tasks = [
+            TaskDefinition(agents=["pkg.p"], user_prompt="produce the list"),
+            TaskDefinition(agents=["pkg.p"], user_prompt="handle {{ result }}", repeat_prompt=True),
+        ]
+        _run(monkeypatch, tmp_path, _taskflow_tasks(tasks), deploy_impl=deploy)
+        # Task B repeated once per element of Task A's carried-over result, which
+        # only works if Task A's branch result was projected into the store.
+        assert [c for c in calls if c.startswith("handle")] == ["handle x", "handle y"]
+
+    def test_async_repeat_fanin_is_ordered_despite_completion_order(self, monkeypatch, tmp_path):
+        async def deploy(available_tools, agents, prompt, *, model=None, record_tool_result=None, **kw):
+            # Earlier items sleep longer so they finish last; the fan-in must
+            # still be in item (submission) order, not completion order.
+            n = int(prompt.split()[-1])
+            await asyncio.sleep((3 - n) * 0.01)
+            if record_tool_result is not None:
+                await record_tool_result(ToolResult(text=json.dumps({"n": n})))
+            return True
+
+        task = TaskDefinition(
+            id="items", agents=["pkg.p"], user_prompt="item {{ result }}",
+            repeat_prompt=True, over="globals.xs", async_task=True, async_limit=3,
+        )
+        _run(monkeypatch, tmp_path, _taskflow(task, globals_={"xs": [0, 1, 2]}), deploy_impl=deploy)
+        records = _session_outputs(tmp_path)["items"]
+        assert [r["result"]["n"] for r in records] == [0, 1, 2]
