@@ -235,7 +235,7 @@ class _Branch:
     label: str
     sink: list[ToolResult] = field(default_factory=list)
     # Typed multi-model output: when the task declares an ``outputs`` schema,
-    # each branch's result is validated and the coerced value stored here
+    # each branch's result is validated and the value stored here
     # (``None`` when the branch failed or violated the schema). ``output_set``
     # marks that validation ran so fan-in uses this value instead of decoding
     # the raw sink.
@@ -250,7 +250,7 @@ def _aggregate_fanin(branches: list[_Branch]) -> list[dict[str, Any]]:
     "result": <value>}``. ``result`` is the decoded final tool result of the
     branch (its raw text when not JSON, or ``None`` when the branch produced no
     tool result). When the task declares an ``outputs`` schema, ``result`` is
-    the per-branch validated/coerced value instead (``None`` for a branch that
+    the per-branch validated value instead (``None`` for a branch that
     failed or violated the schema). Used to expose multi-model / cross-product
     outputs to later tasks as ``outputs.<id>``.
     """
@@ -375,7 +375,7 @@ def _capture_task_output(
     """Capture a task's final tool result as a named typed output.
 
     The task's output is its most recent tool result. When *schema* is
-    non-empty the decoded value is validated/coerced against it (raising a
+    non-empty the decoded value is validated against it (raising a
     clear error on mismatch); otherwise the decoded value is stored as-is,
     falling back to the raw text when it is not JSON. The result is exposed to
     later tasks as ``outputs.<output_id>``.
@@ -501,7 +501,8 @@ async def _build_prompts_to_run(
 
     Raises:
         IndexError: If the legacy path has no previous tool result.
-        ValueError: If the derived value is not valid JSON or not iterable.
+        ValueError: If the legacy path's tool result is not valid JSON.
+        TypeError: If the derived value is not iterable.
     """
     outputs = outputs or {}
     prompts_to_run: list[str] = []
@@ -530,17 +531,22 @@ async def _build_prompts_to_run(
                 raise IndexError("No last tool result available for repeat_prompt")
             iterable_result = decode_tool_result(last)
 
+        # Materialise before testing/iterating: an ``over:`` expression may
+        # yield a one-shot iterator (e.g. Jinja ``map``/``select`` filters),
+        # which is always truthy and would defeat the emptiness check and be
+        # consumed by a single pass. ``list(...)`` also raises TypeError for a
+        # genuinely non-iterable value.
         try:
-            iter(iterable_result)
+            items = list(iterable_result)
         except TypeError:
             logging.critical("repeat_prompt iterable is not iterable: %r", iterable_result)
             raise
 
-        if not iterable_result:
+        if not items:
             await render_model_output("** 🤖❗repeat_prompt iterable is empty!\n")
         else:
-            logging.debug("Rendering templated prompts for results: %s", iterable_result)
-            for value in iterable_result:
+            logging.debug("Rendering templated prompts for results: %s", items)
+            for value in items:
                 try:
                     rendered_prompt = render_template(
                         template_str=task_prompt,
@@ -1240,11 +1246,15 @@ async def run_main(
                         f"** 🤖💾 Session saved: {session.session_id}\n"
                         f"** 🤖💡 Resume with: --resume {session.session_id}\n"
                     )
-                    break
+                    # Raise (rather than break) so run_main propagates the
+                    # failure and the CLI exits non-zero, matching the other
+                    # hard-failure paths; the session is already saved for
+                    # --resume.
+                    raise RuntimeError(f"Required task {task_name!r} did not complete")
 
                 # Capture this task's typed named output (M2). The task's
                 # output is its final tool result; when an ``outputs`` schema
-                # is declared it is validated/coerced before being stored under
+                # is declared it is validated before being stored under
                 # ``outputs.<id>`` for downstream tasks to consume by name. A
                 # declared output contract that the produced value violates is
                 # a hard failure, surfaced with the same session-saved / resume

@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock
 
+import pytest
+
 from seclab_taskflow_agent.models import (
     PersonalityDocument,
     TaskDefinition,
@@ -425,3 +427,20 @@ class TestTypedMultiModelOutputs:
         _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=self._mixed_deploy())
         # completion=any: one schema-valid branch is enough for task success.
         assert _session_data(tmp_path)["completed_tasks"][0]["result"] is True
+
+
+class TestMustCompleteFailure:
+    """A failed `must_complete` task aborts non-silently so the CLI exits non-zero."""
+
+    def test_must_complete_failure_raises_and_marks_failed(self, monkeypatch, tmp_path):
+        async def failing_deploy(available_tools, agents, prompt, *, model=None, record_tool_result=None, **kw):
+            return False  # the task never completes
+
+        task = TaskDefinition(agents=["pkg.p"], user_prompt="hi", must_complete=True)
+        with pytest.raises(RuntimeError, match="did not complete"):
+            _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=failing_deploy)
+
+        # The session is still saved and marked failed (so --resume works).
+        data = _session_data(tmp_path)
+        assert data["finished"] is False
+        assert "did not complete" in data["error"]

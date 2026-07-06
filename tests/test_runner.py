@@ -455,6 +455,31 @@ class TestBuildPromptsToRun:
         )
         assert prompts == []
 
+    def test_repeat_over_empty_generator_emits_empty_notice(self):
+        """An `over:` expression yielding an empty one-shot generator (e.g. a
+        Jinja `map`/`select` filter) is detected as empty rather than silently
+        producing zero prompts (a bare generator is always truthy)."""
+        rendered: list[str] = []
+
+        async def _capture(text: str, **_kw: Any) -> None:
+            rendered.append(text)
+
+        with patch("seclab_taskflow_agent.runner.render_model_output", _capture):
+            prompts = asyncio.run(
+                _build_prompts_to_run(
+                    task_prompt="do {{ result }}",
+                    repeat_prompt=True,
+                    store=ResultStore(),
+                    available_tools=_mock_available_tools(),
+                    global_variables={},
+                    inputs={},
+                    outputs={"items": []},
+                    over="outputs.items | map('upper')",
+                )
+            )
+        assert prompts == []
+        assert any("iterable is empty" in t for t in rendered)
+
     def test_raises_index_error_when_no_last_result(self):
         """IndexError when the store has no previous result."""
         with pytest.raises(IndexError):

@@ -122,7 +122,7 @@ class TaskDefinition(BaseModel):
     model: str = ""
     model_settings: dict[str, Any] = Field(default_factory=dict)
     # Typed named outputs (M2): declare a schema for this task's produced
-    # value; when set, the captured output is validated/coerced and exposed to
+    # value; when set, the captured output is validated and exposed to
     # later tasks as ``outputs.<id>``.
     outputs: dict[str, Any] = Field(default_factory=dict)
     # Explicit iterable selector for repeat_prompt: a Jinja expression

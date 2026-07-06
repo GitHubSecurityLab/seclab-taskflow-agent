@@ -178,7 +178,7 @@ Notes and semantics:
   branch's final result is aggregated into `outputs.<id>` as a list of records
   `{"model": ..., "item": ..., "result": ...}` (see "Typed named outputs").
 - The inline `outputs` schema is applied per branch on multi-model tasks: each
-  branch's result is validated/coerced against the schema and stored as the
+  branch's result is validated against the schema and stored as the
   `result` of its fan-in record. A branch whose result violates the schema is
   treated as a failed branch, which the `completion` policy (`all`/`any`) then
   reduces like any other branch failure (see "Typed named outputs").
@@ -212,7 +212,11 @@ as skipped and not run); otherwise it runs normally.
       user_prompt: |
         Audit this code and report findings as JSON: {"findings": [...]}
       outputs:
-        findings: list[any]
+        type: object
+        properties:
+          findings:
+            type: array
+        required: [findings]
   - task:
       # only remediate when the audit actually found something
       if: "outputs.audit.findings | length > 0"
