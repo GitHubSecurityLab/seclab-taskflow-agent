@@ -351,6 +351,15 @@ class TestConditionalUndefined:
         assert calls == []
         assert _session_data(tmp_path)["completed_tasks"][0]["skipped"] is True
 
+    def test_if_on_missing_dict_method_key_skips(self, monkeypatch, tmp_path):
+        # A missing key named after a dict method (items/keys/values/get) must
+        # read as undefined (falsy) -> skip, not resolve to the bound method
+        # (which would be truthy and run the task).
+        task = TaskDefinition(agents=["pkg.p"], user_prompt="x", **{"if": "globals.cfg.items"})
+        calls = _run(monkeypatch, tmp_path, _taskflow(task, globals_={"cfg": {}}))
+        assert calls == []
+        assert _session_data(tmp_path)["completed_tasks"][0]["skipped"] is True
+
     def test_upstream_skip_then_downstream_if_still_completes(self, monkeypatch, tmp_path):
         # Upstream `audit` is gated out; downstream `if` reaches into its
         # (now missing) output. The whole run must still finish cleanly.

@@ -110,6 +110,20 @@ class TestRenderTemplate:
             )
             assert rendered == "[1, 2]"
 
+    def test_missing_dict_method_key_is_undefined(self):
+        """A missing key named after a dict method resolves to undefined, not
+        the bound method (stock Jinja would return dict.items)."""
+        from seclab_taskflow_agent.template_utils import evaluate_expression
+
+        available_tools = AvailableTools()
+        for key in ("items", "keys", "values", "get"):
+            value = evaluate_expression(
+                "outputs.x." + key,
+                available_tools,
+                outputs_dict={"x": {}},
+            )
+            assert value is None, f"{key!r} on a dict without it should be undefined, got {value!r}"
+
     def test_evaluate_expression_returns_object(self):
         """evaluate_expression returns the actual object, not its string form."""
         from seclab_taskflow_agent.template_utils import evaluate_expression

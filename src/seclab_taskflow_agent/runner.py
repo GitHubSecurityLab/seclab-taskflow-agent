@@ -1051,6 +1051,12 @@ async def run_main(
                         inputs_dict=inputs,
                         outputs_dict=store.outputs,
                     )
+                    # Coerce truthiness inside the try so that an expression
+                    # evaluating to an undefined value raises UndefinedError
+                    # here (treated as falsy -> skip) rather than during the
+                    # `if not condition` check below, regardless of Jinja's
+                    # undefined_to_none behaviour.
+                    condition = bool(condition)
                 except jinja2.UndefinedError:
                     condition = False
                 except jinja2.TemplateError as e:

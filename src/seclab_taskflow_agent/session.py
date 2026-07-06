@@ -176,11 +176,12 @@ class TaskflowSession(BaseModel):
         outputs (which include per-model fan-in records for multi-model tasks).
         It contains no endpoints or secrets.
 
-        Usage accounting: token usage is reported per completed task, and the
-        run-level ``usage`` is the sum over ``completed_tasks``. A task that
-        fails is intentionally not recorded as completed (so ``--resume``
-        re-runs it); it is named in ``error`` but its partial token usage is
-        not itemized or summed here.
+        Usage accounting: token usage is reported per recorded task and the
+        run-level ``usage`` is the sum over ``completed_tasks``. A non-required
+        task that does not complete is still recorded, with ``status="failed"``
+        and its usage counted. A task that aborts the run before it can be
+        recorded -- an exception, or a ``must_complete`` failure -- is named in
+        ``error`` but is not itemized or summed here.
         """
         run_usage = {
             "input_tokens": sum(t.usage.input_tokens for t in self.completed_tasks),

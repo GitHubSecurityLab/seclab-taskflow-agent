@@ -4,6 +4,7 @@
 """Jinja2 template utilities for taskflow template rendering."""
 
 import os
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 import jinja2
@@ -89,11 +90,23 @@ class _DataFirstEnvironment(jinja2.Environment):
     dict methods (``items``, ``keys``, ``values``, ``get``, ``copy``, ...)
     resolve to the *method* instead of the data, e.g. ``outputs.x.items``
     returns the ``dict.items`` builtin. This subclass flips the order so
-    mapping keys win, falling back to attribute access for objects. For keys
-    that are not dict methods the behaviour is identical to stock Jinja.
+    mapping keys win, falling back to attribute access for objects. A mapping
+    is resolved by key *only*: a missing key is undefined rather than a bound
+    dict method, so absent data reads as undefined (falsy) in templates and
+    ``if:`` conditions. For keys that are not dict methods the behaviour is
+    identical to stock Jinja.
     """
 
     def getattr(self, obj: Any, attribute: str) -> Any:  # noqa: N802 - Jinja API
+        # Mappings resolve by key only: a present key wins over any same-named
+        # attribute (the data-first goal), and a *missing* key is undefined --
+        # never a dict method (items/keys/values/get/...) -- so absent data
+        # reads as undefined instead of a truthy bound method.
+        if isinstance(obj, Mapping):
+            if attribute in obj:
+                return obj[attribute]
+            return self.undefined(obj=obj, name=attribute)
+        # Non-mappings keep stock-like resolution: item access, then attribute.
         try:
             return obj[attribute]
         except (TypeError, LookupError):
