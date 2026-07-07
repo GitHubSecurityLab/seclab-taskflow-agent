@@ -121,7 +121,7 @@ class TaskDefinition(BaseModel):
     run: str = ""
     model: str = ""
     model_settings: dict[str, Any] = Field(default_factory=dict)
-    # Typed named outputs (M2): declare a schema for this task's produced
+    # Typed named outputs: declare a JSON Schema for this task's produced
     # value; when set, the captured output is validated and exposed to
     # later tasks as ``outputs.<id>``.
     outputs: dict[str, Any] = Field(default_factory=dict)

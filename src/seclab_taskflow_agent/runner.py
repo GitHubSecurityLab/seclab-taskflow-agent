@@ -223,9 +223,10 @@ class ResolvedModel:
 class _Branch:
     """One (prompt, model) cell of a task's execution matrix.
 
-    Multi-model branches capture their tool results into a private ``sink``
-    (never the shared store) so concurrent branches stay isolated and their
-    final results can be aggregated for fan-in.
+    Every branch captures its tool results into a private ``sink`` (never the
+    shared store) so concurrent branches stay isolated; the runner projects
+    single-model sinks back into the shared store afterwards and aggregates all
+    branch results for fan-in (see the capture design note below).
     """
 
     agents: dict[str, Any]
@@ -1021,15 +1022,16 @@ async def run_main(
             # or their cross product. This drives the unified output-capture
             # model (see the capture design note above ``_aggregate_fanin``):
             # a task that fans out yields a per-branch fan-in list, one that
-            # does not yields a single value.
-            fans_out = multi_model or repeat_prompt
+            # does not yields a single value. A shell task (``run``) never fans
+            # out -- it produces no branches -- so it is always a single value.
+            fans_out = (multi_model or repeat_prompt) and not run
             exclude_from_context = task.exclude_from_context
             async_task = task.async_task
             max_concurrent_tasks = task.async_limit
             completion_policy = task.completion
             # Bound on concurrent model runs (0 == run all models at once).
             model_concurrency = task.model_concurrency or len(resolved_models)
-            # Typed named outputs (M2): id names the task's captured output;
+            # Typed named outputs: id names the task's captured output;
             # outputs declares its schema; over selects a repeat_prompt iterable.
             task_output_id = task.id
             task_output_schema = task.outputs or {}

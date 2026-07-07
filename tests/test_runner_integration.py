@@ -523,3 +523,11 @@ class TestUnifiedCapture:
         _run(monkeypatch, tmp_path, _taskflow(task, globals_={"xs": [0, 1, 2]}), deploy_impl=deploy)
         records = _session_outputs(tmp_path)["items"]
         assert [r["result"]["n"] for r in records] == [0, 1, 2]
+
+    def test_shell_task_never_fans_out(self, monkeypatch, tmp_path):
+        # A shell task produces no branches; even with `models` set (which makes
+        # multi_model true) it captures its single shell result as a scalar, not
+        # an empty fan-in list -- the `not run` guard on fans_out.
+        task = TaskDefinition(id="sh", run='echo \'{"x": 1}\'', models=["a", "b"])
+        _run(monkeypatch, tmp_path, _taskflow(task))
+        assert _session_outputs(tmp_path)["sh"] == {"x": 1}
