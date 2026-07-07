@@ -531,3 +531,21 @@ class TestUnifiedCapture:
         task = TaskDefinition(id="sh", run='echo \'{"x": 1}\'', models=["a", "b"])
         _run(monkeypatch, tmp_path, _taskflow(task))
         assert _session_outputs(tmp_path)["sh"] == {"x": 1}
+
+    def test_plain_task_with_no_result_does_not_leak_prior(self, monkeypatch, tmp_path):
+        # Task A produces a result; Task B produces no tool result. B's output
+        # must be None (its own empty result), never A's result via the
+        # run-global store.
+        async def deploy(available_tools, agents, prompt, *, model=None, record_tool_result=None, **kw):
+            if record_tool_result is not None and prompt.startswith("produce"):
+                await record_tool_result(ToolResult(text=json.dumps({"a": 1})))
+            return True
+
+        tasks = [
+            TaskDefinition(id="a", agents=["pkg.p"], user_prompt="produce a"),
+            TaskDefinition(id="b", agents=["pkg.p"], user_prompt="answer without a tool"),
+        ]
+        _run(monkeypatch, tmp_path, _taskflow_tasks(tasks), deploy_impl=deploy)
+        outputs = _session_outputs(tmp_path)
+        assert outputs["a"] == {"a": 1}
+        assert outputs["b"] is None

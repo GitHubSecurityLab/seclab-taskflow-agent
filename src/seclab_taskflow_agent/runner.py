@@ -408,16 +408,19 @@ def _capture_task_output(
     output_id: str,
     schema: dict[str, Any],
     task_name: str,
+    last: ToolResult | None,
 ) -> None:
-    """Capture a task's final tool result as a named typed output.
+    """Capture a non-fan-out task's own final tool result as a named output.
 
-    The task's output is its most recent tool result. When *schema* is
-    non-empty the decoded value is validated against it (raising a
+    *last* is this task's produced result (its branch's last tool result, or
+    the shell result), **not** the run-global store's last entry -- so a task
+    that produced nothing yields ``None`` (or a hard failure when a schema is
+    declared) rather than silently leaking the previous task's result. When
+    *schema* is non-empty the decoded value is validated against it (raising a
     clear error on mismatch); otherwise the decoded value is stored as-is,
     falling back to the raw text when it is not JSON. The result is exposed to
     later tasks as ``outputs.<output_id>``.
     """
-    last = store.last()
     if last is None:
         if schema:
             raise ValueError(
@@ -1329,9 +1332,19 @@ async def run_main(
                     if fans_out:
                         store.set_output(task_output_id, _aggregate_fanin(captured_branches))
                     else:
+                        # This task's own last result: the single branch's last
+                        # tool result for a model task, or the shell result for a
+                        # shell task (which has no branches and wrote directly to
+                        # the store). Never the run-global store.last(), so an
+                        # empty producer does not leak the previous task's result.
+                        if captured_branches:
+                            _sink = captured_branches[-1].sink
+                            _own_last = _sink[-1] if _sink else None
+                        else:
+                            _own_last = store.last()
                         try:
                             _capture_task_output(
-                                store, task_output_id, task_output_schema, task_name
+                                store, task_output_id, task_output_schema, task_name, _own_last
                             )
                         except Exception as exc:
                             logging.error("Task %r output capture failed: %s", task_name, exc)

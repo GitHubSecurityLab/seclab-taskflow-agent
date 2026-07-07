@@ -814,13 +814,13 @@ class TestCaptureTaskOutput:
     def test_capture_schemaless_decodes_json(self):
         store = ResultStore()
         store.record(ToolResult(text=json.dumps({"functions": [1, 2]})))
-        _capture_task_output(store, "list_fns", {}, "task-0")
+        _capture_task_output(store, "list_fns", {}, "task-0", store.last())
         assert store.outputs["list_fns"] == {"functions": [1, 2]}
 
     def test_capture_schemaless_falls_back_to_text(self):
         store = ResultStore()
         store.record(ToolResult(text="a plain answer"))
-        _capture_task_output(store, "answer", {}, "task-0")
+        _capture_task_output(store, "answer", {}, "task-0", store.last())
         assert store.outputs["answer"] == "a plain answer"
 
     def test_capture_with_schema_validates(self):
@@ -840,7 +840,7 @@ class TestCaptureTaskOutput:
             },
             "required": ["functions"],
         }
-        _capture_task_output(store, "list_fns", schema, "task-0")
+        _capture_task_output(store, "list_fns", schema, "task-0", store.last())
         assert store.outputs["list_fns"] == {"functions": [{"name": "f", "body": "b"}]}
 
     def test_capture_with_schema_validation_error(self):
@@ -854,23 +854,23 @@ class TestCaptureTaskOutput:
             "required": ["functions"],
         }
         with pytest.raises(ValidationError):
-            _capture_task_output(store, "list_fns", schema, "task-0")
+            _capture_task_output(store, "list_fns", schema, "task-0", store.last())
 
     def test_capture_no_result_with_schema_raises(self):
         store = ResultStore()
         schema = {"type": "object", "properties": {"f": {"type": "string"}}, "required": ["f"]}
         with pytest.raises(ValueError, match="produced no tool result"):
-            _capture_task_output(store, "x", schema, "task-0")
+            _capture_task_output(store, "x", schema, "task-0", None)
 
     def test_capture_no_result_schemaless_sets_none(self):
         store = ResultStore()
-        _capture_task_output(store, "x", {}, "task-0")
+        _capture_task_output(store, "x", {}, "task-0", None)
         assert store.outputs["x"] is None
 
     def test_capture_prefers_structured(self):
         store = ResultStore()
         store.record(ToolResult(structured={"functions": ["a"]}))
-        _capture_task_output(store, "out", {}, "task-0")
+        _capture_task_output(store, "out", {}, "task-0", store.last())
         assert store.outputs["out"] == {"functions": ["a"]}
 
 
