@@ -1296,7 +1296,7 @@ async def run_main(
 
                 if must_complete and not task_complete:
                     logging.critical("Required task not completed ... aborting!")
-                    await render_model_output("🤖💥 *Required task not completed ...\n")
+                    await render_model_output("** 🤖💥 Required task not completed ...\n")
                     session.mark_failed(f"Required task {task_name!r} did not complete")
                     await render_model_output(
                         f"** 🤖💾 Session saved: {session.session_id}\n"

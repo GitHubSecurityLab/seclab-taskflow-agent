@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import glob
 import json
+import sys
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock
@@ -524,6 +525,10 @@ class TestUnifiedCapture:
         records = _session_outputs(tmp_path)["items"]
         assert [r["result"]["n"] for r in records] == [0, 1, 2]
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="shell tasks require a POSIX shell (bash) and a reopenable temp file; not supported on Windows",
+    )
     def test_shell_task_never_fans_out(self, monkeypatch, tmp_path):
         # A shell task produces no branches; even with `models` set (which makes
         # multi_model true) it captures its single shell result as a scalar, not

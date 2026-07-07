@@ -20,8 +20,9 @@ taskflow:
   - task:
       # fan out across both models ...
       models: [gpt_fast, gpt_alt]
-      # ... and across each topic (the cross product runs concurrently,
-      # bounded by model_concurrency * async_limit)
+      # ... and across each topic. The whole (model, item) cross product runs
+      # under one concurrency bound: model_concurrency (defaults to the number
+      # of models). async_limit only bounds a single-model repeat_prompt.
       repeat_prompt: true
       over: "globals.topics"
       agents:

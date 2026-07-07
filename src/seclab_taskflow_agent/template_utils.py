@@ -106,7 +106,10 @@ class _DataFirstEnvironment(jinja2.Environment):
             if attribute in obj:
                 return obj[attribute]
             return self.undefined(obj=obj, name=attribute)
-        # Non-mappings keep stock-like resolution: item access, then attribute.
+        # Non-mappings (sequences, objects): try item access first, then
+        # attribute access. This intentionally flips stock Jinja's getattr
+        # order (which tries the attribute first) so the data-first preference
+        # is consistent for any object that supports both lookups.
         try:
             return obj[attribute]
         except (TypeError, LookupError):
