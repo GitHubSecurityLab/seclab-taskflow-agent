@@ -306,7 +306,7 @@ def test_prompt_caching_enabled_by_default():
     handle = _AnthropicHandle(
         client=_make_fake_client(captured),
         system_prompt="",
-        model="claude-mythos-5",
+        model="claude-opus-4.7",
         max_tokens=100,
         tools=[],
         mcp_server_map={},
@@ -335,7 +335,7 @@ def test_prompt_caching_explicit_opt_out():
     handle = _AnthropicHandle(
         client=_make_fake_client(captured),
         system_prompt="",
-        model="claude-mythos-5",
+        model="claude-opus-4.7",
         max_tokens=100,
         tools=[],
         mcp_server_map={},
@@ -363,7 +363,7 @@ def test_prompt_caching_1h_ttl_passes_ttl_field():
     handle = _AnthropicHandle(
         client=_make_fake_client(captured),
         system_prompt="",
-        model="claude-mythos-5",
+        model="claude-opus-4.7",
         max_tokens=100,
         tools=[],
         mcp_server_map={},
@@ -425,7 +425,7 @@ def test_blocked_tools_matches_raw_name_against_namespaced_tool(monkeypatch):
     spec = AgentSpec(
         name="t",
         instructions="",
-        model="claude-mythos-preview",
+        model="claude-opus-4.7",
         mcp_servers=[MCPServerSpec(name="rc", kind="stdio", params={"_native": wrap})],
         blocked_tools=["read_file"],  # raw name from YAML
     )
@@ -478,7 +478,7 @@ def test_blocked_tools_also_matches_already_namespaced_name(monkeypatch):
     spec = AgentSpec(
         name="t",
         instructions="",
-        model="claude-mythos-preview",
+        model="claude-opus-4.7",
         mcp_servers=[MCPServerSpec(name="rc", kind="stdio", params={"_native": wrap})],
         blocked_tools=[f"{ns}read_file"],  # already namespaced
     )
@@ -515,7 +515,7 @@ def test_build_raises_bad_request_when_no_token_available(monkeypatch):
     spec = AgentSpec(
         name="t",
         instructions="",
-        model="claude-mythos-preview",
+        model="claude-opus-4.7",
         endpoint="https://api.githubcopilot.com",
     )
     backend = AnthropicSDKBackend()
@@ -563,7 +563,7 @@ def test_4xx_api_status_errors_map_to_bad_request(monkeypatch, status_code):
     handle = _AnthropicHandle(
         client=_FakeClient(),
         system_prompt="",
-        model="claude-mythos-5",
+        model="claude-opus-4.7",
         max_tokens=100,
         tools=[],
         mcp_server_map={},
@@ -614,7 +614,7 @@ def test_5xx_api_status_errors_map_to_unexpected(monkeypatch):
     handle = _AnthropicHandle(
         client=_FakeClient(),
         system_prompt="",
-        model="claude-mythos-5",
+        model="claude-opus-4.7",
         max_tokens=100,
         tools=[],
         mcp_server_map={},
