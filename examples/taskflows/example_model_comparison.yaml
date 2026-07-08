@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# Example: a simple model evaluation / comparison flow.
+#   1. Ask several models the SAME question in parallel and capture each
+#      model's prose answer (capture: response).
+#   2. A single "judge" model reads every captured answer by name and picks
+#      the best one.
+# This showcases multi-model fan-out, response capture, fan-in via
+# outputs.<id>, and an `if` gate. See doc/GRAMMAR.md "Multiple Models",
+# "Typed named outputs", and "Capturing the response instead of a tool result".
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: taskflow
+
+model_config: examples.model_configs.multi_model
+
+globals:
+  question: "In one sentence, what is a use-after-free bug?"
+
+taskflow:
+  # Fan out the same question across both models. capture: response stores each
+  # model's final prose answer, so outputs.answers becomes a fan-in list of
+  # {model, item, result} records -- one per model -- ready to compare.
+  - task:
+      id: answers
+      models: [gpt_fast, gpt_alt]
+      completion: all
+      capture: response
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: "{{ globals.question }}"
+
+  # A single judge model compares the captured answers by name. Runs only if at
+  # least one model answered.
+  - task:
+      if: "outputs.answers | length > 0"
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        You are judging candidate answers to this question:
+        "{{ globals.question }}"
+
+        The candidates, one per model:
+        {% for a in outputs.answers %}
+        - {{ a.model }}: {{ a.result }}
+        {% endfor %}
+
+        In two sentences, say which answer is best and why.

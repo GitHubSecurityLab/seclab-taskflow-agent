@@ -235,6 +235,11 @@ class _Branch:
     item_index: int
     label: str
     sink: list[ToolResult] = field(default_factory=list)
+    # Final response text captured for ``capture: response`` tasks (the prose
+    # the agent emitted after its last tool call). ``None`` until the branch's
+    # stream completes; the capture layer wraps it as a synthetic tool result
+    # so response and tool-result capture share one decode/validate path.
+    message: str | None = None
     # Typed multi-model output: when the task declares an ``outputs`` schema,
     # each branch's result is validated and the value stored here
     # (``None`` when the branch failed or violated the schema). ``output_set``
@@ -280,16 +285,31 @@ class _Branch:
 # ---------------------------------------------------------------------------
 
 
-def _aggregate_fanin(branches: list[_Branch]) -> list[dict[str, Any]]:
-    """Aggregate each branch's final tool result into fan-in records.
+def _branch_result_source(branch: _Branch, *, capture_response: bool) -> ToolResult | None:
+    """Return the raw result this branch captured, as a ``ToolResult``.
+
+    For ``capture: response`` the agent's final response text is wrapped in a
+    synthetic :class:`ToolResult` so response and tool-result capture share the
+    same decode/validate path; ``None`` when the branch produced no response.
+    Otherwise the branch's last real tool result is returned (``None`` when its
+    sink is empty).
+    """
+    if capture_response:
+        return ToolResult(text=branch.message) if branch.message is not None else None
+    return branch.sink[-1] if branch.sink else None
+
+
+def _aggregate_fanin(branches: list[_Branch], *, capture_response: bool = False) -> list[dict[str, Any]]:
+    """Aggregate each branch's final result into fan-in records.
 
     Produces one record per branch: ``{"model": <label>, "item": <index>,
-    "result": <value>}``. ``result`` is the decoded final tool result of the
-    branch (its raw text when not JSON, or ``None`` when the branch produced no
-    tool result). When the task declares an ``outputs`` schema, ``result`` is
-    the per-branch validated value instead (``None`` for a branch that
-    failed or violated the schema). Used to expose multi-model / cross-product
-    outputs to later tasks as ``outputs.<id>``.
+    "result": <value>}``. ``result`` is the decoded final result of the branch
+    -- its last tool result, or its final response text when the task uses
+    ``capture: response`` -- (its raw text when not JSON, or ``None`` when the
+    branch produced nothing). When the task declares an ``outputs`` schema,
+    ``result`` is the per-branch validated value instead (``None`` for a branch
+    that failed or violated the schema). Used to expose multi-model /
+    cross-product outputs to later tasks as ``outputs.<id>``.
     """
     records: list[dict[str, Any]] = []
     for branch in branches:
@@ -297,11 +317,12 @@ def _aggregate_fanin(branches: list[_Branch]) -> list[dict[str, Any]]:
             value: Any = branch.output
         else:
             value = None
-            if branch.sink:
+            source = _branch_result_source(branch, capture_response=capture_response)
+            if source is not None:
                 try:
-                    value = decode_tool_result(branch.sink[-1])
+                    value = decode_tool_result(source)
                 except ValueError:
-                    value = branch.sink[-1].text
+                    value = source.text
         records.append({"model": branch.rm.label, "item": branch.item_index, "result": value})
     return records
 
@@ -311,6 +332,7 @@ def _capture_branch_output(
     schema: dict[str, Any],
     *,
     agent_ok: bool,
+    capture_response: bool = False,
 ) -> bool:
     """Validate one multi-model branch's result against the task's outputs schema.
 
@@ -318,22 +340,25 @@ def _capture_branch_output(
     failed to run or its result violates the contract) and returns whether the
     branch both ran and produced a schema-valid result. A contract violation is
     therefore surfaced as a failed branch, which the task's ``completion`` policy
-    (``all`` / ``any``) reduces like any other branch failure.
+    (``all`` / ``any``) reduces like any other branch failure. The validated
+    value is the branch's last tool result, or its final response text when the
+    task uses ``capture: response``.
     """
     branch.output_set = True
     branch.output = None
     if not agent_ok:
         return False
-    if not branch.sink:
+    source = _branch_result_source(branch, capture_response=capture_response)
+    if source is None:
         logging.error(
             "Multi-model branch %r produced no result to validate against 'outputs'",
             branch.label,
         )
         return False
     try:
-        value = decode_tool_result(branch.sink[-1])
+        value = decode_tool_result(source)
     except ValueError:
-        value = branch.sink[-1].text
+        value = source.text
     try:
         branch.output = validate_output(schema, value)
         return True
@@ -633,6 +658,7 @@ async def deploy_task_agents(
     stream_label: str | None = None,
     record_tool_result: Callable[[ToolResult], Awaitable[None]] | None = None,
     record_usage: Callable[[Any], Awaitable[None]] | None = None,
+    record_message: Callable[[str], Awaitable[None]] | None = None,
 ) -> bool:
     """Deploy and run task agents with MCP servers.
 
@@ -654,6 +680,9 @@ async def deploy_task_agents(
             adapter captures results via ``run_hooks.on_tool_end`` instead.
         record_usage: Neutral sink for ``TokenUsage`` events emitted by every
             adapter, used to gather per-task token accounting for the manifest.
+        record_message: Neutral sink for the agent's final response text,
+            forwarded once the stream completes. Used by ``capture: response``
+            tasks to store the model's prose answer as their named output.
 
     Returns:
         True if the task completed successfully.
@@ -803,6 +832,7 @@ async def deploy_task_agents(
                 max_rate_limit_backoff=MAX_RATE_LIMIT_BACKOFF,
                 record_tool_result=record_tool_result,
                 record_usage=record_usage,
+                record_message=record_message,
             )
             complete = True
 
@@ -1038,6 +1068,9 @@ async def run_main(
             # outputs declares its schema; over selects a repeat_prompt iterable.
             task_output_id = task.id
             task_output_schema = task.outputs or {}
+            # capture: response stores the agent's final response text as the
+            # named output instead of its final tool result.
+            capture_response = task.capture == "response"
             over = task.over or ""
             task_name = task.name or f"task-{task_index}"
 
@@ -1187,6 +1220,10 @@ async def run_main(
                             watchdog_ping()
                             branch.sink.append(tr)
 
+                        async def _branch_record_message(text: str) -> None:
+                            watchdog_ping()
+                            branch.message = text
+
                         run_hooks = TaskRunHooks(
                             on_tool_end=_branch_tool_end, on_tool_start=on_tool_start_hook
                         )
@@ -1204,6 +1241,7 @@ async def run_main(
                             run_hooks=run_hooks,
                             record_tool_result=branch_record,
                             record_usage=record_usage,
+                            record_message=_branch_record_message,
                             model=rm.model,
                             model_par=rm.model_settings,
                             api_type=rm.api_type,
@@ -1226,6 +1264,7 @@ async def run_main(
                                 branch,
                                 task_output_schema,
                                 agent_ok=branch_ok,
+                                capture_response=capture_response,
                             )
                         return branch_ok
 
@@ -1330,16 +1369,22 @@ async def run_main(
                 # the same session-saved / resume messaging as other failures).
                 if task_output_id:
                     if fans_out:
-                        store.set_output(task_output_id, _aggregate_fanin(captured_branches))
+                        store.set_output(
+                            task_output_id,
+                            _aggregate_fanin(captured_branches, capture_response=capture_response),
+                        )
                     else:
                         # This task's own last result: the single branch's last
-                        # tool result for a model task, or the shell result for a
-                        # shell task (which has no branches and wrote directly to
-                        # the store). Never the run-global store.last(), so an
-                        # empty producer does not leak the previous task's result.
+                        # tool result (or its final response text under
+                        # capture: response) for a model task, or the shell
+                        # result for a shell task (which has no branches and
+                        # wrote directly to the store). Never the run-global
+                        # store.last(), so an empty producer does not leak the
+                        # previous task's result.
                         if captured_branches:
-                            _sink = captured_branches[-1].sink
-                            _own_last = _sink[-1] if _sink else None
+                            _own_last = _branch_result_source(
+                                captured_branches[-1], capture_response=capture_response
+                            )
                         else:
                             _own_last = store.last()
                         try:

@@ -91,6 +91,7 @@ def _drive(backend: _ScriptedBackend, hooks: Any = None, record_tool_result: Any
             max_rate_limit_backoff=kwargs.get("max_rate_limit_backoff", 4),
             record_tool_result=record_tool_result,
             record_usage=kwargs.get("record_usage"),
+            record_message=kwargs.get("record_message"),
         )
     )
 
@@ -232,3 +233,51 @@ def test_drive_pings_watchdog_per_event(monkeypatch):
     )
     _drive(backend, _RecordingHooks())
     assert len(pings) == 3
+
+
+def _message_sink() -> tuple[list[str], Any]:
+    seen: list[str] = []
+
+    async def _record(text: str) -> None:
+        seen.append(text)
+
+    return seen, _record
+
+
+def test_drive_captures_final_message(monkeypatch):
+    monkeypatch.setattr(
+        "seclab_taskflow_agent._stream.render_model_output",
+        lambda *_a, **_kw: _noop(),
+    )
+    seen, sink = _message_sink()
+    backend = _ScriptedBackend([[TextDelta(text="hel"), TextDelta(text="lo")]])
+    _drive(backend, record_message=sink)
+    # The final response text is the concatenation of the text deltas.
+    assert seen == ["hello"]
+
+
+def test_drive_final_message_resets_on_tool_call(monkeypatch):
+    monkeypatch.setattr(
+        "seclab_taskflow_agent._stream.render_model_output",
+        lambda *_a, **_kw: _noop(),
+    )
+    seen, sink = _message_sink()
+    # Prose before a tool call is discarded; only the prose after the last tool
+    # call is the final response.
+    backend = _ScriptedBackend(
+        [[TextDelta(text="thinking"), ToolEnd(tool_name="t", text="r"), TextDelta(text="answer")]]
+    )
+    _drive(backend, record_message=sink)
+    assert seen == ["answer"]
+
+
+def test_drive_final_message_empty_when_ends_on_tool(monkeypatch):
+    monkeypatch.setattr(
+        "seclab_taskflow_agent._stream.render_model_output",
+        lambda *_a, **_kw: _noop(),
+    )
+    seen, sink = _message_sink()
+    backend = _ScriptedBackend([[TextDelta(text="x"), ToolEnd(tool_name="t", text="r")]])
+    _drive(backend, record_message=sink)
+    # A turn ending on a tool call produced no trailing prose.
+    assert seen == [""]

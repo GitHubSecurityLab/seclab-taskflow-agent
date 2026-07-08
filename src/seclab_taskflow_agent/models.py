@@ -43,6 +43,12 @@ BackendSdk = Literal["openai_agents", "copilot_sdk", "anthropic_sdk"]
 # single branch succeeding is enough.
 CompletionPolicy = Literal["all", "any"]
 
+# Which produced value a task captures as its named ``outputs.<id>``:
+# ``tool_result`` (default) captures the task's final tool result; ``response``
+# captures the agent's final response text (the prose after its last tool
+# call), which is what model-comparison / evaluation flows want.
+CaptureSource = Literal["tool_result", "response"]
+
 
 # ---------------------------------------------------------------------------
 # Header
@@ -125,6 +131,11 @@ class TaskDefinition(BaseModel):
     # value; when set, the captured output is validated and exposed to
     # later tasks as ``outputs.<id>``.
     outputs: dict[str, Any] = Field(default_factory=dict)
+    # Which produced value feeds ``outputs.<id>``: the task's final tool result
+    # (default) or the agent's final response text (``response``). Response
+    # capture is what side-by-side model comparison / evaluation flows want,
+    # since the value to compare is the model's prose answer, not a tool result.
+    capture: CaptureSource = "tool_result"
     # Explicit iterable selector for repeat_prompt: a Jinja expression
     # evaluated against the template context (e.g. ``outputs.list_fns.items``).
     over: str = ""
@@ -183,6 +194,11 @@ class TaskDefinition(BaseModel):
     def _run_xor_prompt(self) -> TaskDefinition:
         if self.run and self.user_prompt:
             raise ValueError("shell task ('run') and prompt task ('user_prompt') are mutually exclusive")
+        if self.capture == "response" and self.run:
+            raise ValueError(
+                "capture: response captures an agent's final response text and does not "
+                "apply to a shell task ('run'); use the default capture: tool_result"
+            )
         return self
 
     @model_validator(mode="after")

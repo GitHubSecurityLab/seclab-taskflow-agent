@@ -79,6 +79,17 @@ class TestTaskDefinition:
         with pytest.raises(ValidationError, match="mutually exclusive"):
             TaskDefinition(run="echo hi", user_prompt="Hello")
 
+    def test_capture_defaults_to_tool_result(self):
+        assert TaskDefinition(user_prompt="hi").capture == "tool_result"
+
+    def test_capture_response_rejects_shell_task(self):
+        with pytest.raises(ValidationError, match="capture: response"):
+            TaskDefinition(run="echo hi", capture="response")
+
+    def test_capture_rejects_unknown_value(self):
+        with pytest.raises(ValidationError):
+            TaskDefinition(user_prompt="hi", capture="bogus")
+
     def test_extra_fields_allowed(self):
         t = TaskDefinition(future_field="value")
         assert t.model_extra["future_field"] == "value"

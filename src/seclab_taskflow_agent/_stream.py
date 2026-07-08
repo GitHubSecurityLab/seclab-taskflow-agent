@@ -74,6 +74,7 @@ async def drive_backend_stream(
     max_rate_limit_backoff: int,
     record_tool_result: Any = None,
     record_usage: Any = None,
+    record_message: Any = None,
 ) -> None:
     """Run the backend's event stream to completion with retry/backoff.
 
@@ -85,12 +86,24 @@ async def drive_backend_stream(
     :class:`BackendTimeoutError`, and applies exponential backoff up to
     *max_rate_limit_backoff* seconds on :class:`BackendRateLimitError`
     before giving up with a :class:`BackendTimeoutError`.
+
+    When *record_message* is provided, the agent's final response text is
+    forwarded to it once the stream completes successfully. "Final response"
+    is the prose emitted after the last tool call: text deltas are accumulated
+    and reset on each ``ToolEnd``, so a task that ends on a tool call yields
+    only that trailing summary, and a plain question-and-answer turn yields the
+    whole answer. This is what ``capture: response`` tasks store as their named
+    output.
     """
     max_retry = max_api_retry
     rate_limit_backoff = initial_rate_limit_backoff
     last_rate_limit_exc: BackendRateLimitError | None = None
 
     while rate_limit_backoff:
+        # Accumulate the agent's final response text per attempt (reset on a
+        # retry, and on each tool call, so we keep only the prose after the
+        # last tool result -- the model's final answer).
+        final_message_parts: list[str] = []
         try:
             stream = backend_impl.run_streamed(
                 agent_handle, prompt, max_turns=max_turns
@@ -110,10 +123,12 @@ async def drive_backend_stream(
                         ) from exc
                     watchdog_ping()
                     if isinstance(event, TextDelta):
+                        final_message_parts.append(event.text)
                         await render_model_output(
                             event.text, async_task=async_task, task_id=task_id
                         )
                     elif isinstance(event, ToolEnd):
+                        final_message_parts.clear()
                         await handle_tool_end_event(event, run_hooks, record_tool_result)
                     elif isinstance(event, TokenUsage):
                         logging.info(
@@ -138,6 +153,8 @@ async def drive_backend_stream(
                     except Exception:  # noqa: BLE001 - best-effort cleanup
                         logging.exception("Failed to aclose backend stream iterator")
             await render_model_output("\n\n", async_task=async_task, task_id=task_id)
+            if record_message is not None:
+                await record_message("".join(final_message_parts))
             return
         except BackendTimeoutError:
             if not max_retry:

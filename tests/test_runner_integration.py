@@ -554,3 +554,89 @@ class TestUnifiedCapture:
         outputs = _session_outputs(tmp_path)
         assert outputs["a"] == {"a": 1}
         assert outputs["b"] is None
+
+
+class TestResponseCapture:
+    """`capture: response` stores the agent's final response text, not its
+    final tool result -- the value a model-comparison / judge flow wants."""
+
+    def test_multi_model_response_fanin(self, monkeypatch, tmp_path):
+        # Every model's prose answer is captured as its fan-in `result`.
+        async def deploy(available_tools, agents, prompt, *, model=None, record_message=None, **kw):
+            if record_message is not None:
+                await record_message(f"answer from {model}")
+            return True
+
+        task = TaskDefinition(
+            id="cmp", agents=["pkg.p"], user_prompt="explain X", models=["m1", "m2"], capture="response"
+        )
+        _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=deploy)
+        records = _session_outputs(tmp_path)["cmp"]
+        assert [(r["model"], r["result"]) for r in records] == [
+            ("m1", "answer from m1"),
+            ("m2", "answer from m2"),
+        ]
+
+    def test_plain_task_response_is_scalar(self, monkeypatch, tmp_path):
+        # A plain (non-fan-out) response task publishes a scalar, not a list.
+        async def deploy(available_tools, agents, prompt, *, model=None, record_message=None, **kw):
+            if record_message is not None:
+                await record_message("the final answer")
+            return True
+
+        task = TaskDefinition(id="x", agents=["pkg.p"], user_prompt="answer", capture="response")
+        _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=deploy)
+        assert _session_outputs(tmp_path)["x"] == "the final answer"
+
+    def test_response_capture_ignores_tool_results(self, monkeypatch, tmp_path):
+        # When both a tool result and a response are produced, response capture
+        # takes the response text and ignores the tool result.
+        async def deploy(
+            available_tools, agents, prompt, *, model=None, record_tool_result=None, record_message=None, **kw
+        ):
+            if record_tool_result is not None:
+                await record_tool_result(ToolResult(text=json.dumps({"tool": "value"})))
+            if record_message is not None:
+                await record_message("prose answer")
+            return True
+
+        task = TaskDefinition(id="x", agents=["pkg.p"], user_prompt="answer", capture="response")
+        _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=deploy)
+        assert _session_outputs(tmp_path)["x"] == "prose answer"
+
+    def test_response_capture_validates_against_schema(self, monkeypatch, tmp_path):
+        # A JSON response is decoded and validated against the outputs schema.
+        async def deploy(available_tools, agents, prompt, *, model=None, record_message=None, **kw):
+            if record_message is not None:
+                await record_message('{"verdict": "m1", "score": 9}')
+            return True
+
+        task = TaskDefinition(
+            id="judge",
+            agents=["pkg.p"],
+            user_prompt="judge",
+            capture="response",
+            outputs={
+                "type": "object",
+                "properties": {"verdict": {"type": "string"}, "score": {"type": "integer"}},
+                "required": ["verdict", "score"],
+            },
+        )
+        _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=deploy)
+        assert _session_outputs(tmp_path)["judge"] == {"verdict": "m1", "score": 9}
+
+    def test_default_capture_is_tool_result(self, monkeypatch, tmp_path):
+        # Without capture: response, a response message is ignored and the tool
+        # result is captured (backwards-compatible default).
+        async def deploy(
+            available_tools, agents, prompt, *, model=None, record_tool_result=None, record_message=None, **kw
+        ):
+            if record_message is not None:
+                await record_message("ignored prose")
+            if record_tool_result is not None:
+                await record_tool_result(ToolResult(text=json.dumps({"tool": "value"})))
+            return True
+
+        task = TaskDefinition(id="x", agents=["pkg.p"], user_prompt="answer")
+        _run(monkeypatch, tmp_path, _taskflow(task), deploy_impl=deploy)
+        assert _session_outputs(tmp_path)["x"] == {"tool": "value"}

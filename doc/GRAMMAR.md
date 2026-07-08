@@ -488,6 +488,43 @@ Notes:
   task does not feed it: there is no single "last" result across models, so a
   downstream task must consume its output by name via `id`/`over`.
 
+### Capturing the response instead of a tool result (`capture`)
+
+By default a task's named output (`outputs.<id>`) is its final **tool result**.
+Some tasks have no meaningful tool result to capture: an evaluation or
+comparison flow just wants the model's **prose answer**. Set `capture: response`
+to store the agent's final response text instead.
+
+- `capture: tool_result` (default) captures the task's last tool result, as
+  described above.
+- `capture: response` captures the agent's final response text: the prose it
+  emits after its last tool call (or the whole answer when it calls no tools).
+  This applies uniformly to the scalar output of a plain task and to each
+  branch's `result` in a fan-out task's fan-in list.
+
+`capture` composes with everything else: an `outputs` schema still validates the
+captured value (the response text is decoded as JSON first, so a schema-typed
+response task must emit JSON), and `id` still names it for later tasks. It does
+not apply to shell (`run`) tasks, which have no agent response.
+
+```yaml
+  - task:
+      # ask several models the same question; capture each prose answer
+      id: answers
+      models: [gpt_fast, gpt_alt]
+      capture: response
+      agents: [seclab_taskflow_agent.personalities.assistant]
+      user_prompt: "In one sentence, what is a use-after-free bug?"
+  - task:
+      # a judge model reads every captured answer by name
+      agents: [seclab_taskflow_agent.personalities.assistant]
+      user_prompt: |
+        Rank these answers and explain your pick:
+        {% for a in outputs.answers %}
+        - {{ a.model }}: {{ a.result }}
+        {% endfor %}
+```
+
 ### Toolboxes / MCP Servers
 
 Toolboxes are MCP server configurations. They can be defined at the Agent level or overridden at the task level. These MCP servers are started and made available to the Agents in the Agents list during a Task. The `toolboxes` field should contain a list of files for the `toolboxes` that are available for the task:
