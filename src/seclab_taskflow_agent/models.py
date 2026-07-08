@@ -222,7 +222,10 @@ class TaskDefinition(BaseModel):
             try:
                 validate_output_schema(self.outputs)
             except OutputSchemaError as exc:
-                raise ValueError(f"invalid 'outputs' schema: {exc}") from exc
+                # OutputSchemaError already carries a fully-formed, descriptive
+                # message; surface it directly rather than re-prefixing (which
+                # would duplicate its "invalid 'outputs' schema:" prefix).
+                raise ValueError(str(exc)) from exc
         if self.over and not self.repeat_prompt:
             raise ValueError("'over' only applies to repeat_prompt tasks")
         return self

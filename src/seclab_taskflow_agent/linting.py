@@ -140,11 +140,16 @@ def _lint_task(task: TaskDefinition, location: str, ctx: _Ctx) -> None:
 
     # Agents (personalities) and their toolboxes.
     for agent_name in task.agents or []:
-        if _check_reference(at.get_personality, agent_name, "personality", location, ctx):
+        try:
             personality = at.get_personality(agent_name)
-            if not (task.toolboxes or []):
-                for tb in personality.toolboxes or []:
-                    _check_reference(at.get_toolbox, tb, "toolbox", location, ctx)
+        except Exception as exc:  # noqa: BLE001 - loader raises several types
+            ctx.add(
+                "error", "missing-personality", f"cannot load personality {agent_name!r}: {exc}", location
+            )
+            continue
+        if not (task.toolboxes or []):
+            for tb in personality.toolboxes or []:
+                _check_reference(at.get_toolbox, tb, "toolbox", location, ctx)
 
     # Task-level toolbox overrides.
     for tb in task.toolboxes or []:

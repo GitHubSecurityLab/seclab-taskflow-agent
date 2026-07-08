@@ -224,6 +224,11 @@ class TestTypedOutputs:
         with pytest.raises(ValidationError, match="invalid 'outputs' schema"):
             TaskDefinition(id="x", user_prompt="hi", outputs={"type": "not-a-json-schema-type"})
 
+    def test_invalid_outputs_schema_message_not_double_prefixed(self):
+        with pytest.raises(ValidationError) as exc_info:
+            TaskDefinition(id="x", user_prompt="hi", outputs={"type": "not-a-json-schema-type"})
+        assert str(exc_info.value).count("invalid 'outputs' schema:") == 1
+
     def test_over_requires_repeat_prompt(self):
         with pytest.raises(ValidationError, match="'over' only applies to repeat_prompt"):
             TaskDefinition(user_prompt="{{ result }}", over="outputs.x.items")
