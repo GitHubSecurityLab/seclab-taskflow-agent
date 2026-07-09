@@ -22,14 +22,14 @@ class TestEnvFunction:
         """Test accessing existing environment variable."""
         os.environ['TEST_VAR_JINJA'] = 'test_value'
         try:
-            assert env_function('TEST_VAR_JINJA') == 'test_value'
+            assert env_function('TEST_VAR_JINJA', default=None, required=True) == 'test_value'
         finally:
             del os.environ['TEST_VAR_JINJA']
 
     def test_env_missing_required(self):
         """Test error on missing required variable."""
         with pytest.raises(LookupError, match="Required environment variable"):
-            env_function('NONEXISTENT_VAR_JINJA')
+            env_function('NONEXISTENT_VAR_JINJA', default=None, required=True)
 
     def test_env_with_default(self):
         """Test default value for missing variable."""
@@ -38,14 +38,14 @@ class TestEnvFunction:
 
     def test_env_optional_missing(self):
         """Test optional variable returns empty string."""
-        result = env_function('NONEXISTENT_VAR_JINJA', required=False)
+        result = env_function('NONEXISTENT_VAR_JINJA', default=None, required=False)
         assert result == ''
 
     def test_env_with_default_exists(self):
         """Test that existing var takes precedence over default."""
         os.environ['TEST_VAR_DEFAULT'] = 'actual_value'
         try:
-            result = env_function('TEST_VAR_DEFAULT', default='default_value')
+            result = env_function('TEST_VAR_DEFAULT', default='default_value', required=True)
             assert result == 'actual_value'
         finally:
             del os.environ['TEST_VAR_DEFAULT']
