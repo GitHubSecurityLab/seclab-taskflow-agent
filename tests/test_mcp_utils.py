@@ -6,12 +6,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from seclab_taskflow_agent.mcp_utils import MCPNamespaceWrap, compress_name
+from seclab_taskflow_agent.mcp_utils import MCPNamespaceWrap, compress_name, mcp_client_params
 
 
 class _FakeTool:
@@ -145,3 +146,40 @@ def test_list_tools_existing_behaviour_unchanged():
     obj.list_tools.assert_awaited_once_with(run_context="ctx", agent="agent")
     ns = compress_name("RepoContext")
     assert result[0].name == f"{ns}read_file"
+
+
+# -- secret redaction in debug logs --
+
+
+def test_mcp_client_params_logs_env_names_not_secret_values(monkeypatch, caplog):
+    # A tool-call environment routinely resolves credentials like GH_TOKEN;
+    # debug logging must record only the variable names, never the values.
+    sentinel = "do-not-log-this-value"
+    monkeypatch.setenv("GH_TOKEN", sentinel)
+    server_params = SimpleNamespace(
+        kind="stdio",
+        reconnecting=False,
+        env={"GH_TOKEN": "{{ env('GH_TOKEN') }}", "LOG_DIR": "/tmp/logs"},
+        args=None,
+        command="echo",
+    )
+    toolbox = SimpleNamespace(
+        server_params=server_params,
+        confirm=[],
+        server_prompt=None,
+        client_session_timeout=None,
+    )
+    available_tools = MagicMock()
+    available_tools.get_toolbox.return_value = toolbox
+
+    with caplog.at_level(logging.DEBUG):
+        params = mcp_client_params(available_tools, ["pkg.tb"])
+
+    # The resolved secret value never reaches the logs ...
+    assert sentinel not in caplog.text
+    # ... but the variable names are still logged for debuggability.
+    assert "GH_TOKEN" in caplog.text
+    assert "LOG_DIR" in caplog.text
+    # Redaction is log-only: the real env (with the resolved secret) is still
+    # passed through to the MCP server.
+    assert params["pkg.tb"][0]["env"]["GH_TOKEN"] == sentinel
