@@ -12,7 +12,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from seclab_taskflow_agent.mcp_utils import MCPNamespaceWrap, compress_name, mcp_client_params
+from seclab_taskflow_agent.mcp_utils import (
+    MCPNamespaceWrap,
+    _env_names,
+    compress_name,
+    mcp_client_params,
+)
 
 
 class _FakeTool:
@@ -183,3 +188,11 @@ def test_mcp_client_params_logs_env_names_not_secret_values(monkeypatch, caplog)
     # Redaction is log-only: the real env (with the resolved secret) is still
     # passed through to the MCP server.
     assert params["pkg.tb"][0]["env"]["GH_TOKEN"] == sentinel
+
+
+def test_env_names_returns_sorted_names_or_none():
+    # Non-empty env -> sorted names; empty dict -> empty list; None -> None
+    # (honouring the list[str] | None contract, never leaking values).
+    assert _env_names({"B_VAR": "x", "A_VAR": "{{ env('A') }}"}) == ["A_VAR", "B_VAR"]
+    assert _env_names({}) == []
+    assert _env_names(None) is None

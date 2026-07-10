@@ -179,7 +179,7 @@ def _env_names(env: dict[str, Any] | None) -> list[str] | None:
     their values must never be written to logs. Callers log the names to keep
     debug output useful without leaking secrets.
     """
-    return sorted(env) if env else env
+    return sorted(env) if env is not None else None
 
 
 def mcp_client_params(
