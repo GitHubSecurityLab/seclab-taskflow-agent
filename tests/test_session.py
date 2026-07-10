@@ -22,9 +22,9 @@ class TestTaskflowSession:
     def test_record_task_advances_index(self):
         """Recording a task increments next_task_index."""
         s = TaskflowSession(taskflow_path="test.flow")
-        s.record_task(index=0, name="task-0", success=True, tool_results=["r1"])
+        s.record_task(index=0, name="task-0", success=True, result_snapshot={"results": [], "outputs": {"a": 1}})
         assert s.next_task_index == 1
-        assert s.last_tool_results == ["r1"]
+        assert s.result_snapshot == {"results": [], "outputs": {"a": 1}}
         s.record_task(index=1, name="task-1", success=True)
         assert s.next_task_index == 2
 
@@ -103,9 +103,8 @@ class TestCompletedTask:
         t = CompletedTask(index=0)
         assert t.name == ""
         assert t.result is False
-        assert t.tool_results == []
 
-    def test_with_results(self):
-        t = CompletedTask(index=2, name="analyze", result=True, tool_results=["r1", "r2"])
+    def test_with_result(self):
+        t = CompletedTask(index=2, name="analyze", result=True)
         assert t.index == 2
-        assert t.tool_results == ["r1", "r2"]
+        assert t.result is True

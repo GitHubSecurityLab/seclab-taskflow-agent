@@ -6,16 +6,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 
 import pytest
 
 from seclab_taskflow_agent._stream import (
-    bridge_copilot_tool_event,
     drive_backend_stream,
+    handle_tool_end_event,
 )
-from seclab_taskflow_agent.sdk import TextDelta, ToolEnd
+from seclab_taskflow_agent.results import ToolResult
+from seclab_taskflow_agent.sdk import TextDelta, TokenUsage, ToolEnd
 from seclab_taskflow_agent.sdk.errors import (
     BackendRateLimitError,
     BackendTimeoutError,
@@ -34,19 +34,31 @@ class _RecordingHooks:
         self.ends.append((ctx, agent, tool, result))
 
 
-def test_bridge_emits_envelope_and_name():
+def _record_sink() -> tuple[list[ToolResult], Any]:
+    recorded: list[ToolResult] = []
+
+    async def _record(tr: ToolResult) -> None:
+        recorded.append(tr)
+
+    return recorded, _record
+
+
+def test_handle_tool_end_records_neutral_result_and_name():
     hooks = _RecordingHooks()
-    asyncio.run(bridge_copilot_tool_event(ToolEnd(tool_name="echo", text="hi"), hooks))
+    recorded, sink = _record_sink()
+    asyncio.run(handle_tool_end_event(ToolEnd(tool_name="echo", text="hi"), hooks, sink))
+    # Progress notice rendered via on_tool_start
     assert len(hooks.starts) == 1
     assert hooks.starts[0][2].name == "echo"
-    assert len(hooks.ends) == 1
-    _, _, tool, payload = hooks.ends[0]
-    assert tool.name == "echo"
-    assert json.loads(payload) == {"text": "hi"}
+    # Neutral ToolResult recorded (no faked JSON envelope)
+    assert len(recorded) == 1
+    assert recorded[0].tool_name == "echo"
+    assert recorded[0].text == "hi"
+    assert recorded[0].structured is None
 
 
-def test_bridge_no_hooks_is_noop():
-    asyncio.run(bridge_copilot_tool_event(ToolEnd(tool_name="echo", text="hi"), None))
+def test_handle_tool_end_no_hooks_or_sink_is_noop():
+    asyncio.run(handle_tool_end_event(ToolEnd(tool_name="echo", text="hi"), None, None))
 
 
 class _ScriptedBackend:
@@ -64,7 +76,7 @@ class _ScriptedBackend:
             yield ev
 
 
-def _drive(backend: _ScriptedBackend, hooks: Any = None, **kwargs: Any) -> None:
+def _drive(backend: _ScriptedBackend, hooks: Any = None, record_tool_result: Any = None, **kwargs: Any) -> None:
     asyncio.run(
         drive_backend_stream(
             backend_impl=backend,
@@ -77,6 +89,9 @@ def _drive(backend: _ScriptedBackend, hooks: Any = None, **kwargs: Any) -> None:
             max_api_retry=kwargs.get("max_api_retry", 1),
             initial_rate_limit_backoff=kwargs.get("initial_rate_limit_backoff", 1),
             max_rate_limit_backoff=kwargs.get("max_rate_limit_backoff", 4),
+            record_tool_result=record_tool_result,
+            record_usage=kwargs.get("record_usage"),
+            record_message=kwargs.get("record_message"),
         )
     )
 
@@ -89,13 +104,34 @@ def test_drive_renders_text_and_forwards_tool_event(monkeypatch):
 
     monkeypatch.setattr("seclab_taskflow_agent._stream.render_model_output", _fake_render)
     hooks = _RecordingHooks()
+    recorded, sink = _record_sink()
     backend = _ScriptedBackend([[TextDelta(text="hi"), ToolEnd(tool_name="echo", text="r")]])
 
-    _drive(backend, hooks)
+    _drive(backend, hooks, record_tool_result=sink)
 
     assert "hi" in rendered
-    assert hooks.ends
-    assert json.loads(hooks.ends[0][3]) == {"text": "r"}
+    assert len(recorded) == 1
+    assert recorded[0].tool_name == "echo"
+    assert recorded[0].text == "r"
+
+
+def test_drive_forwards_token_usage(monkeypatch):
+    async def _fake_render(*_a: Any, **_kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr("seclab_taskflow_agent._stream.render_model_output", _fake_render)
+
+    seen: list[Any] = []
+
+    async def _usage_sink(u: Any) -> None:
+        seen.append(u)
+
+    usage = TokenUsage(model="m", input_tokens=100, output_tokens=20, cache_read_tokens=64)
+    backend = _ScriptedBackend([[TextDelta(text="hi"), usage]])
+
+    _drive(backend, record_usage=_usage_sink)
+
+    assert seen == [usage]
 
 
 def test_drive_retries_then_succeeds_on_timeout(monkeypatch):
@@ -197,3 +233,51 @@ def test_drive_pings_watchdog_per_event(monkeypatch):
     )
     _drive(backend, _RecordingHooks())
     assert len(pings) == 3
+
+
+def _message_sink() -> tuple[list[str], Any]:
+    seen: list[str] = []
+
+    async def _record(text: str) -> None:
+        seen.append(text)
+
+    return seen, _record
+
+
+def test_drive_captures_final_message(monkeypatch):
+    monkeypatch.setattr(
+        "seclab_taskflow_agent._stream.render_model_output",
+        lambda *_a, **_kw: _noop(),
+    )
+    seen, sink = _message_sink()
+    backend = _ScriptedBackend([[TextDelta(text="hel"), TextDelta(text="lo")]])
+    _drive(backend, record_message=sink)
+    # The final response text is the concatenation of the text deltas.
+    assert seen == ["hello"]
+
+
+def test_drive_final_message_resets_on_tool_call(monkeypatch):
+    monkeypatch.setattr(
+        "seclab_taskflow_agent._stream.render_model_output",
+        lambda *_a, **_kw: _noop(),
+    )
+    seen, sink = _message_sink()
+    # Prose before a tool call is discarded; only the prose after the last tool
+    # call is the final response.
+    backend = _ScriptedBackend(
+        [[TextDelta(text="thinking"), ToolEnd(tool_name="t", text="r"), TextDelta(text="answer")]]
+    )
+    _drive(backend, record_message=sink)
+    assert seen == ["answer"]
+
+
+def test_drive_final_message_empty_when_ends_on_tool(monkeypatch):
+    monkeypatch.setattr(
+        "seclab_taskflow_agent._stream.render_model_output",
+        lambda *_a, **_kw: _noop(),
+    )
+    seen, sink = _message_sink()
+    backend = _ScriptedBackend([[TextDelta(text="x"), ToolEnd(tool_name="t", text="r")]])
+    _drive(backend, record_message=sink)
+    # A turn ending on a tool call produced no trailing prose.
+    assert seen == [""]

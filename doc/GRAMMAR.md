@@ -103,6 +103,86 @@ Parameters to the model can also be specified in the task using the `model_setti
 
 If `model_settings` is absent, then the model parameters will fall back to either the default or the ones supplied in a `model_config`. However, any parameters supplied in the task will override those that are set in the `model_config`.
 
+### Multiple Models (multi-model tasks)
+
+A task can be run against several models at once using the `models` field. Each
+model runs the task in parallel and its output is streamed as its own labelled
+block, which makes it easy to compare how different models respond to the same
+prompt (for example when evaluating an audit prompt across model families).
+
+The simplest form is a list of logical model names (resolved through the
+`model_config` exactly like the singular `model` field):
+
+```yaml
+  - task:
+      models: [gpt_default, claude_native, gpt_responses]
+      agents:
+        - seclab_taskflow_agent.personalities.c_auditer
+      user_prompt: |
+        Audit this function for memory safety issues.
+```
+
+Each entry may also be a map with its own `model_settings`, so different models
+can use different parameters in the same task:
+
+```yaml
+  - task:
+      models:
+        - model: gpt_default
+          model_settings:
+            temperature: 0.2
+        - model: claude_native
+          model_settings:
+            reasoning:
+              effort: high
+      agents:
+        - seclab_taskflow_agent.personalities.c_auditer
+      user_prompt: |
+        Audit this function for memory safety issues.
+```
+
+Notes and semantics:
+
+- `model` (singular) and `models` (plural) are mutually exclusive. `model: x`
+  is exactly equivalent to `models: [x]`; existing single-model taskflows are
+  unaffected.
+- Per-entry `model_settings` support the same engine keys as `model_config`
+  (`api_type`, `endpoint`, `token`, `backend`), so different models may run on
+  different backends within one task.
+- `completion` controls when the task counts as complete across its fan-out
+  branches: `all` (default, every branch must succeed) or `any` (one branch
+  succeeding is enough). This is what `must_complete` checks against.
+- `model_concurrency` caps how many branches run at once for a multi-model
+  task (default `0` runs all models in parallel):
+
+```yaml
+  - task:
+      models: [m1, m2, m3, m4]
+      model_concurrency: 2
+      completion: any
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        ...
+```
+
+- Multi-model output is buffered per model and flushed as a labelled block when
+  each model finishes, so streams from different models do not interleave.
+- `models` can be combined with `repeat_prompt`: the task runs the cross
+  product of items x models concurrently, bounded by `model_concurrency`
+  (default: all branches at once). Each branch is streamed as its own block
+  labelled `<model> [item <n>]`.
+- Multi-model tool results are not threaded into the implicit last-tool-result
+  channel that the next task's `repeat_prompt` reads (that stays deterministic).
+  To consume multi-model results downstream, give the task an `id`: each
+  branch's final result is aggregated into `outputs.<id>` as a list of records
+  `{"model": ..., "item": ..., "result": ...}` (see "Typed named outputs").
+- The inline `outputs` schema is applied per branch on multi-model tasks: each
+  branch's result is validated against the schema and stored as the
+  `result` of its fan-in record. A branch whose result violates the schema is
+  treated as a failed branch, which the `completion` policy (`all`/`any`) then
+  reduces like any other branch failure (see "Typed named outputs").
+
 ### Completion Requirement
 
 Tasks can be marked as requiring completion, if a required task fails, the taskflow will abort. This defaults to false.
@@ -117,6 +197,69 @@ Example:
       user_prompt: |
         ...
 ```
+
+### Conditional execution (`if`)
+
+A task can be gated with a GitHub-Actions-style `if` condition: a Jinja
+expression evaluated against the template context (`globals`, `inputs`, and
+prior tasks' `outputs`). When it evaluates falsy the task is skipped (recorded
+as skipped and not run); otherwise it runs normally.
+
+```yaml
+  - task:
+      id: audit
+      agents: [seclab_taskflow_agent.personalities.c_auditer]
+      user_prompt: |
+        Audit this code and report findings as JSON: {"findings": [...]}
+      outputs:
+        type: object
+        properties:
+          findings:
+            type: array
+        required: [findings]
+  - task:
+      # only remediate when the audit actually found something
+      if: "outputs.audit.findings | length > 0"
+      agents: [seclab_taskflow_agent.personalities.assistant]
+      user_prompt: |
+        Propose fixes for: {{ outputs.audit.findings }}
+```
+
+Notes:
+
+- The expression may be written bare (`globals.mode == 'deep'`) or wrapped in
+  `{{ ... }}`. Standard truthiness applies (empty list/string/`0`/`false` are
+  falsy).
+- Referencing a name that does not exist (for example an output from a task that
+  has not run) is treated as falsy, so the task is skipped rather than failing,
+  matching GitHub Actions semantics. To be explicit you can still guard with
+  `is defined`, e.g. `if: "outputs.audit is defined and outputs.audit.findings"`.
+- `if` composes with everything else: a skipped task does not run its agents,
+  fan out over `models`, or capture outputs.
+
+### Conditionals and loops inside a prompt
+
+Because prompts are rendered with Jinja2, you can use `{% if %}` / `{% for %}`
+directly inside a `user_prompt`:
+
+```yaml
+  - task:
+      agents: [seclab_taskflow_agent.personalities.c_auditer]
+      user_prompt: |
+        {% if globals.mode == 'deep' %}
+        Perform a DEEP audit of {{ globals.target }}.
+        {% else %}
+        Do a quick scan of {{ globals.target }}.
+        {% endif %}
+        {% for area in globals.focus %}
+        - pay attention to {{ area }}
+        {% endfor %}
+```
+
+Unlike the task-level `if` condition (which treats undefined names as falsy and
+skips the task), undefined variables inside a prompt raise, to catch typos. Use
+`is defined` or the `default` filter for optional data:
+`{{ globals.note | default('') }}`.
 
 ### Running templated tasks in a loop
 
@@ -257,6 +400,129 @@ Example:
         List all the files in the codeql database `some/codeql/db`.
       toolboxes:
         - seclab_taskflow_agent.toolboxes.codeql
+```
+
+### Typed named outputs
+
+By default, data flows between tasks implicitly: `repeat_prompt` consumes the
+*last tool result* of the previous task. That is positional (whichever tool
+fired last) and untyped. A task can instead publish a **named, typed output**
+that later tasks consume by name.
+
+Three fields drive this:
+
+- `id` names a task, exposing its output to later tasks as `outputs.<id>`. The
+  shape depends on whether the task fans out:
+  - A plain task (single model, no `repeat_prompt`) publishes its single
+    produced value (its final tool result).
+  - A task that fans out (`repeat_prompt`, multiple `models`, or their cross
+    product) publishes a per-branch fan-in list of
+    `{"model": <label>, "item": <index>, "result": <value>}` records, one per
+    branch. This is uniform across the item axis and the model axis, so a
+    single-model `repeat_prompt` and a multi-model task capture the same way.
+- `outputs` declares an inline JSON Schema (Draft 2020-12). When present, the
+  task's value is validated against it before being stored. Validation is strict
+  and does not coerce, so a value whose types do not match the contract is a
+  failure. On a fan-out task the schema is applied to each branch's `result`
+  (a violation is a failed branch under the `completion` policy); on a plain
+  task it is applied to the single value (a violation is a hard failure). A
+  malformed schema is rejected when the taskflow is loaded, before any model
+  calls are made.
+- `over` is an explicit iterable selector for `repeat_prompt`: a Jinja
+  expression evaluated against the template context (so it yields a real list,
+  not a re-parsed string).
+
+Example: one task produces a typed list of functions, the next analyses each.
+
+```yaml
+  - task:
+      id: list_functions
+      agents: [seclab_taskflow_agent.personalities.assistant]
+      user_prompt: |
+        List all functions as JSON: {"functions": [{"name": ..., "body": ...}]}
+      outputs:
+        type: object
+        properties:
+          functions:
+            type: array
+            items:
+              type: object
+              properties:
+                name: {type: string}
+                body: {type: string}
+              required: [name, body]
+        required: [functions]
+  - task:
+      repeat_prompt: true
+      over: "outputs.list_functions.functions"
+      agents: [seclab_taskflow_agent.personalities.c_auditer]
+      user_prompt: |
+        Analyze function {{ result.name }}:
+        {{ result.body }}
+```
+
+The `outputs` schema is a standard JSON Schema (Draft 2020-12), authored inline
+in YAML, so the full vocabulary is available:
+
+- Types via `type` (`object`, `array`, `string`, `integer`, `number`,
+  `boolean`, `null`), with `properties`/`required` for objects and `items` for
+  arrays.
+- `enum`/`const` for fixed value sets, and constraints such as `minimum`,
+  `maximum`, `minLength`, and `pattern`.
+- Objects with dynamic keys via `additionalProperties`, and strictness via
+  `additionalProperties: false`.
+- Unions (`anyOf`/`oneOf`), and `$ref`/`$defs` to reuse a shape across fields.
+
+Because validation is strict (no coercion), have the task emit JSON whose types
+already match, e.g. the integer `7` rather than the string `"7"`.
+
+Notes:
+
+- `outputs.<id>` is a template namespace alongside `globals`, `inputs`, and
+  the per-iteration `result`. Keys named after dict methods (`items`, `keys`,
+  `values`, ...) resolve to your data, not the method.
+- Without `id`/`outputs`/`over`, the implicit last-tool-result `repeat_prompt`
+  behaviour is unchanged.
+- Implicit carry-over (the next task's `repeat_prompt` reading the previous
+  task's last tool result) is fed by single-model tasks only. A multi-model
+  task does not feed it: there is no single "last" result across models, so a
+  downstream task must consume its output by name via `id`/`over`.
+
+### Capturing the response instead of a tool result (`capture`)
+
+By default a task's named output (`outputs.<id>`) is its final **tool result**.
+Some tasks have no meaningful tool result to capture: an evaluation or
+comparison flow just wants the model's **prose answer**. Set `capture: response`
+to store the agent's final response text instead.
+
+- `capture: tool_result` (default) captures the task's last tool result, as
+  described above.
+- `capture: response` captures the agent's final response text: the prose it
+  emits after its last tool call (or the whole answer when it calls no tools).
+  This applies uniformly to the scalar output of a plain task and to each
+  branch's `result` in a fan-out task's fan-in list.
+
+`capture` composes with everything else: an `outputs` schema still validates the
+captured value (the response text is decoded as JSON first, so a schema-typed
+response task must emit JSON), and `id` still names it for later tasks. It does
+not apply to shell (`run`) tasks, which have no agent response.
+
+```yaml
+  - task:
+      # ask several models the same question; capture each prose answer
+      id: answers
+      models: [gpt_fast, gpt_alt]
+      capture: response
+      agents: [seclab_taskflow_agent.personalities.assistant]
+      user_prompt: "In one sentence, what is a use-after-free bug?"
+  - task:
+      # a judge model reads every captured answer by name
+      agents: [seclab_taskflow_agent.personalities.assistant]
+      user_prompt: |
+        Rank these answers and explain your pick:
+        {% for a in outputs.answers %}
+        - {{ a.model }}: {{ a.result }}
+        {% endfor %}
 ```
 
 ### Toolboxes / MCP Servers

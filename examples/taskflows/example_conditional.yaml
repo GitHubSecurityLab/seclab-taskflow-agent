@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# Example: GitHub-Actions-style conditional task execution with `if`.
+# The condition is a Jinja expression over globals / inputs / prior outputs.
+# Override the mode from the CLI: `-g mode=quick`.
+# See doc/GRAMMAR.md "Conditional execution (if)".
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: taskflow
+
+globals:
+  mode: deep
+
+taskflow:
+  - task:
+      # runs only in deep mode
+      if: "globals.mode == 'deep'"
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        In one short sentence, describe what a deep security audit involves.
+  - task:
+      # skipped in deep mode
+      if: "globals.mode == 'quick'"
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        In one short sentence, describe a quick scan.

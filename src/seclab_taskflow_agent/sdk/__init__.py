@@ -16,6 +16,7 @@ __all__ = [
     "MCPServerSpec",
     "StreamEvent",
     "TextDelta",
+    "TokenUsage",
     "ToolEnd",
     "get_backend",
     "resolve_backend_name",
@@ -29,6 +30,7 @@ from .base import (
     MCPServerSpec,
     StreamEvent,
     TextDelta,
+    TokenUsage,
     ToolEnd,
 )
 

@@ -183,3 +183,6 @@ config.yaml
 
 #database
 *.db
+
+# memcache dictionary_file state written by example taskflows at runtime
+*_taskflow/

@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from seclab_taskflow_agent.models import (
     ModelConfigDocument,
+    ModelEntry,
     PersonalityDocument,
     PromptDocument,
     ServerParams,
@@ -78,9 +79,183 @@ class TestTaskDefinition:
         with pytest.raises(ValidationError, match="mutually exclusive"):
             TaskDefinition(run="echo hi", user_prompt="Hello")
 
+    def test_capture_defaults_to_tool_result(self):
+        assert TaskDefinition(user_prompt="hi").capture == "tool_result"
+
+    def test_capture_response_rejects_shell_task(self):
+        with pytest.raises(ValidationError, match="capture: response"):
+            TaskDefinition(run="echo hi", capture="response")
+
+    def test_capture_rejects_unknown_value(self):
+        with pytest.raises(ValidationError):
+            TaskDefinition(user_prompt="hi", capture="bogus")
+
     def test_extra_fields_allowed(self):
         t = TaskDefinition(future_field="value")
         assert t.model_extra["future_field"] == "value"
+
+
+class TestMultiModel:
+    """Test the multi-model ``models:`` grammar on a task."""
+
+    def test_defaults_single_model(self):
+        """Absent ``models`` leaves a task single-model with default policy."""
+        t = TaskDefinition(user_prompt="hi")
+        assert t.models == []
+        assert t.completion == "all"
+        assert t.model_concurrency == 0
+        entries = t.effective_model_entries()
+        assert len(entries) == 1
+        assert entries[0].model == ""
+        assert entries[0].model_settings == {}
+
+    def test_singular_model_wrapped_in_entry(self):
+        """The singular ``model``/``model_settings`` pair maps to one entry."""
+        t = TaskDefinition(user_prompt="hi", model="fast", model_settings={"temperature": 0.5})
+        entries = t.effective_model_entries()
+        assert len(entries) == 1
+        assert entries[0].model == "fast"
+        assert entries[0].model_settings == {"temperature": 0.5}
+
+    def test_string_list_coerced_to_entries(self):
+        """A bare list of names coerces each into a ModelEntry."""
+        t = TaskDefinition(user_prompt="hi", models=["gpt_default", "claude_native"])
+        assert all(isinstance(e, ModelEntry) for e in t.models)
+        assert [e.model for e in t.effective_model_entries()] == ["gpt_default", "claude_native"]
+        assert all(e.model_settings == {} for e in t.effective_model_entries())
+
+    def test_rich_entries_preserve_settings(self):
+        """Per-entry ``model_settings`` maps are preserved."""
+        t = TaskDefinition(
+            user_prompt="hi",
+            models=[
+                {"model": "gpt_default", "model_settings": {"temperature": 0.2}},
+                {"model": "claude_native", "model_settings": {"reasoning": {"effort": "high"}}},
+            ],
+        )
+        entries = t.effective_model_entries()
+        assert entries[0].model == "gpt_default"
+        assert entries[0].model_settings == {"temperature": 0.2}
+        assert entries[1].model_settings == {"reasoning": {"effort": "high"}}
+
+    def test_mixed_string_and_map_entries(self):
+        """A list may mix bare names and override maps."""
+        t = TaskDefinition(
+            user_prompt="hi",
+            models=["gpt_default", {"model": "claude_native", "model_settings": {"temperature": 0.1}}],
+        )
+        entries = t.effective_model_entries()
+        assert entries[0].model == "gpt_default"
+        assert entries[0].model_settings == {}
+        assert entries[1].model == "claude_native"
+        assert entries[1].model_settings == {"temperature": 0.1}
+
+    def test_model_and_models_mutually_exclusive(self):
+        with pytest.raises(ValidationError, match="mutually exclusive"):
+            TaskDefinition(user_prompt="hi", model="fast", models=["a"])
+
+    def test_multi_model_with_repeat_prompt_allowed(self):
+        """Multi-model + repeat_prompt is a supported cross product."""
+        t = TaskDefinition(user_prompt="{{ result }}", repeat_prompt=True, models=["a", "b"])
+        assert len(t.effective_model_entries()) == 2
+
+    def test_single_model_with_repeat_prompt_allowed(self):
+        """One-element ``models`` is fine with repeat_prompt (no fan-out)."""
+        t = TaskDefinition(user_prompt="{{ result }}", repeat_prompt=True, models=["only"])
+        assert len(t.effective_model_entries()) == 1
+
+    def test_completion_policy_validated(self):
+        with pytest.raises(ValidationError):
+            TaskDefinition(user_prompt="hi", models=["a", "b"], completion="quorum")
+        t = TaskDefinition(user_prompt="hi", models=["a", "b"], completion="any")
+        assert t.completion == "any"
+
+    def test_negative_model_concurrency_rejected(self):
+        with pytest.raises(ValidationError, match="model_concurrency"):
+            TaskDefinition(user_prompt="hi", models=["a", "b"], model_concurrency=-1)
+
+    def test_invalid_models_type_rejected(self):
+        with pytest.raises(ValidationError, match="must be a list"):
+            TaskDefinition(user_prompt="hi", models="gpt_default")
+
+    def test_invalid_models_entry_rejected(self):
+        with pytest.raises(ValidationError, match="invalid 'models' entry"):
+            TaskDefinition(user_prompt="hi", models=[123])
+
+
+class TestTypedOutputs:
+    """Test the typed named outputs grammar (id / outputs / over)."""
+
+    def test_conditional_if_field_alias(self):
+        """`if:` in YAML maps to the aliased if_ field; defaults to empty."""
+        t = TaskDefinition(**{"if": "globals.enabled", "user_prompt": "hi"})
+        assert t.if_ == "globals.enabled"
+        assert TaskDefinition(user_prompt="hi").if_ == ""
+
+    def test_defaults(self):
+        t = TaskDefinition(user_prompt="hi")
+        assert t.id == ""
+        assert t.outputs == {}
+        assert t.over == ""
+
+    def test_id_and_outputs_accepted(self):
+        t = TaskDefinition(
+            id="list_functions",
+            user_prompt="list them",
+            outputs={
+                "type": "object",
+                "properties": {
+                    "functions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"name": {"type": "string"}, "body": {"type": "string"}},
+                            "required": ["name", "body"],
+                        },
+                    }
+                },
+                "required": ["functions"],
+            },
+        )
+        assert t.id == "list_functions"
+        assert t.outputs["properties"]["functions"]["type"] == "array"
+
+    def test_invalid_outputs_schema_rejected_at_load(self):
+        with pytest.raises(ValidationError, match="invalid 'outputs' schema"):
+            TaskDefinition(id="x", user_prompt="hi", outputs={"type": "not-a-json-schema-type"})
+
+    def test_invalid_outputs_schema_message_not_double_prefixed(self):
+        with pytest.raises(ValidationError) as exc_info:
+            TaskDefinition(id="x", user_prompt="hi", outputs={"type": "not-a-json-schema-type"})
+        assert str(exc_info.value).count("invalid 'outputs' schema:") == 1
+
+    def test_over_requires_repeat_prompt(self):
+        with pytest.raises(ValidationError, match="'over' only applies to repeat_prompt"):
+            TaskDefinition(user_prompt="{{ result }}", over="outputs.x.items")
+
+    def test_over_with_repeat_prompt_ok(self):
+        t = TaskDefinition(user_prompt="{{ result }}", repeat_prompt=True, over="outputs.x.items")
+        assert t.over == "outputs.x.items"
+
+    def test_id_allowed_on_multi_model_for_fanin(self):
+        """`id` on a multi-model task is allowed (enables fan-in)."""
+        t = TaskDefinition(id="cmp", user_prompt="hi", models=["a", "b"])
+        assert t.id == "cmp"
+
+    def test_over_allowed_on_multi_model_repeat(self):
+        """`over` (iterable selector) is allowed on a multi-model repeat task."""
+        t = TaskDefinition(
+            user_prompt="{{ result }}", repeat_prompt=True, models=["a", "b"], over="outputs.x.items"
+        )
+        assert t.over == "outputs.x.items"
+
+    def test_outputs_schema_allowed_on_multi_model(self):
+        # Typed outputs are now supported on multi-model tasks: the schema is
+        # applied per branch (see runner fan-in), so construction must succeed.
+        schema = {"type": "object", "properties": {"f": {"type": "string"}}, "required": ["f"]}
+        t = TaskDefinition(user_prompt="hi", models=["a", "b"], outputs=schema)
+        assert t.outputs == schema
+        assert [e.model for e in t.models] == ["a", "b"]
 
 
 class TestTaskflowDocument:

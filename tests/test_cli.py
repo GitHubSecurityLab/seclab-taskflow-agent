@@ -82,3 +82,53 @@ class TestDebugEnvParsing:
 
     def test_random_text_is_false(self):
         assert self._is_debug("enabled") is False
+
+
+class TestLintAndSchema:
+    """Tests for the --lint and --schema CLI helpers."""
+
+    def test_run_lint_returns_zero_when_clean(self, monkeypatch):
+        from seclab_taskflow_agent import cli
+
+        def _no_issues(*_a, **_k):
+            return []
+
+        monkeypatch.setattr("seclab_taskflow_agent.linting.lint_taskflow", _no_issues)
+        assert cli._run_lint(object(), "pkg.flow", strict=False, cli_model_config=None) == 0
+
+    def test_run_lint_returns_one_on_error(self, monkeypatch):
+        from seclab_taskflow_agent import cli
+        from seclab_taskflow_agent.linting import LintIssue
+
+        def _error(*_a, **_k):
+            return [LintIssue("error", "x", "boom")]
+
+        monkeypatch.setattr("seclab_taskflow_agent.linting.lint_taskflow", _error)
+        assert cli._run_lint(object(), "pkg.flow", strict=False, cli_model_config=None) == 1
+
+    def test_run_lint_warnings_only_returns_zero(self, monkeypatch):
+        from seclab_taskflow_agent import cli
+        from seclab_taskflow_agent.linting import LintIssue
+
+        def _warn(*_a, **_k):
+            return [LintIssue("warning", "y", "meh")]
+
+        monkeypatch.setattr("seclab_taskflow_agent.linting.lint_taskflow", _warn)
+        assert cli._run_lint(object(), "pkg.flow", strict=False, cli_model_config=None) == 0
+
+    def test_run_lint_integration_on_example(self):
+        from seclab_taskflow_agent import cli
+        from seclab_taskflow_agent.available_tools import AvailableTools
+
+        # A shipped example must lint without errors (exit 0).
+        assert cli._run_lint(AvailableTools(), "examples.taskflows.echo", strict=False, cli_model_config=None) == 0
+
+    def test_dump_schemas_outputs_all_document_types(self, capsys):
+        import json
+
+        from seclab_taskflow_agent import cli
+
+        cli._dump_schemas()
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert set(data.keys()) == {"taskflow", "personality", "toolbox", "model_config", "prompt"}

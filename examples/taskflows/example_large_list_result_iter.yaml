@@ -24,4 +24,4 @@ taskflow:
       agents:
         - seclab_taskflow_agent.personalities.assistant
       user_prompt: |
-        Echo this:  The title is {{ result.title }} and the url is {{ result.url }}.
+        Echo this:  The title is {{ result.title }} and the url is {{ result.html_url }}.

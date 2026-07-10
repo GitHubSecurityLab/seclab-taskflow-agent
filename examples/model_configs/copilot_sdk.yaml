@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# Example model_config selecting the Copilot SDK backend (copilot_sdk),
+# which drives the Copilot CLI session protocol. Swap the model id for
+# whatever your Copilot subscription exposes.
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: model_config
+models:
+  cop: gpt-5.4-mini
+model_settings:
+  cop:
+    backend: copilot_sdk

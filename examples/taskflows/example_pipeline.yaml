@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# Showcase pipeline composing several grammar features:
+#   - a shell task producing a typed, validated `outputs.audit`
+#   - a conditional (`if`) gate on that prior output
+#   - a multi-model task that fans in per-model results (`id: triage`)
+#   - a task skipped by its condition
+# Inspect the run afterwards with `--manifest <session_id>`.
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: taskflow
+
+model_config: examples.model_configs.multi_model
+
+globals:
+  min_findings: 1
+
+taskflow:
+  - task:
+      id: audit
+      run: |
+        echo '{"findings": ["use-after-free in parser", "overflow in loader"]}'
+      outputs:
+        type: object
+        properties:
+          findings:
+            type: array
+            items:
+              type: string
+        required: [findings]
+  - task:
+      # only triage when the audit found enough findings
+      if: "outputs.audit.findings | length >= globals.min_findings"
+      id: triage
+      models: [gpt_fast, gpt_alt]
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        In five words or fewer, name the single most severe issue:
+        {{ outputs.audit.findings }}
+  - task:
+      # never runs for this input (condition is false)
+      if: "outputs.audit.findings | length > 99"
+      agents:
+        - seclab_taskflow_agent.personalities.assistant
+      user_prompt: |
+        This task is intentionally skipped.

@@ -24,7 +24,7 @@ You can find a detailed overview of the taskflow grammar [here](doc/GRAMMAR.md) 
 ```
 ┌─────────────────────────────────────────────────────┐
 │                   CLI (cli.py)                      │
-│  Typer-based entry point: -p, -t, -l, -g, -m, --resume│
+│  Typer-based entry point: -p, -t, -l, -g, -m, --resume, --lint│
 └─────────────────────┬───────────────────────────────┘
                       │
 ┌─────────────────────▼───────────────────────────────┐
@@ -160,6 +160,20 @@ Failed tasks are automatically retried up to 3 times with increasing backoff
 before the session is saved. Session checkpoints are stored in the
 platform-specific application data directory.
 
+### Run Manifest
+
+Every run produces a machine-readable manifest summarising what happened:
+per-task status (ok / failed / skipped), the models each task ran against,
+timing, and the named `outputs` each task produced (including per-model fan-in
+records for multi-model tasks). It contains no endpoints or tokens.
+
+The manifest is written to a run-scoped artifacts directory when a run finishes
+or fails, and can be printed for any session by ID:
+
+```bash
+python -m seclab_taskflow_agent --manifest abc123def456
+```
+
 ### Error Output
 
 By default, errors are shown as concise one-line messages. Use `--debug` (or
@@ -172,6 +186,30 @@ Error: [BadRequestError] model 'foo' not found
 
 # Full traceback
 python -m seclab_taskflow_agent --debug -t examples.taskflows.echo
+```
+
+### Linting and Schema
+
+Taskflows can be validated offline, without making any model calls, using
+`--lint`. This resolves the taskflow and every document it references
+(personalities, toolboxes, model configs, reusable taskflows), checks model
+names against the model config, validates prompt/`over` template syntax, and
+reports unknown fields (likely typos):
+
+```bash
+# Validate a taskflow and its references
+python -m seclab_taskflow_agent --lint -t examples.taskflows.echo
+
+# Treat unknown fields as errors (not just warnings)
+python -m seclab_taskflow_agent --lint --strict -t examples.taskflows.echo
+```
+
+`--lint` exits non-zero if any errors are found, so it can gate CI. The JSON
+Schema for each grammar document type can be printed with `--schema` for editor
+integration and external validation:
+
+```bash
+python -m seclab_taskflow_agent --schema
 ```
 
 ### MCP Environment Denylist
@@ -198,6 +236,28 @@ At GitHub Security Lab, we primarily use this framework as a code auditing tool,
 The framework includes a [CodeQL](https://codeql.github.com/) MCP server that can be used for Agentic code review, see the [CVE-2023-2283](examples/taskflows/CVE-2023-2283.yaml) taskflow for an example of how to have an Agent review C code using a CodeQL database ([demo video](https://www.youtube.com/watch?v=eRSPSVW8RMo)).
 
 Instead of generating CodeQL queries itself, the CodeQL MCP Server is used to provide CodeQL-query based MCP tools that allow an Agent to navigate and explore code. It leverages templated CodeQL queries to provide targeted context for model driven code analysis.
+
+### Model comparison and evaluation
+
+The framework can also run the same prompt across several models and compare their answers, which is useful for evaluating models against each other on a given task. The [example_model_comparison](examples/taskflows/example_model_comparison.yaml) taskflow shows the pattern: a multi-model task fans the same question out across two models, captures each model's prose answer with `capture: response`, and a second "judge" task reads every captured answer by name (`outputs.answers`) and picks the best one.
+
+Run it against your endpoint like any other taskflow:
+
+```bash
+python -m seclab_taskflow_agent -t examples.taskflows.example_model_comparison
+```
+
+Each model answers in its own labelled output block, and the judge task then compares them, for example:
+
+```
+** 🤖✏️ Output for gpt_alt
+A use-after-free bug is a type of software vulnerability that occurs when a program continues to use a memory location after it has been freed ...
+** 🤖✏️ Output for gpt_fast
+A use-after-free bug occurs when a program continues to use memory after it has been freed ...
+The gpt_fast answer is best because it is more concise while still clearly explaining ...
+```
+
+The two models are defined in [multi_model.yaml](examples/model_configs/multi_model.yaml); swap the provider IDs there to compare whatever models your endpoint exposes. `capture: response` is what makes the models' prose answers (rather than a tool result) available to the judge; see the "Capturing the response instead of a tool result" section of [doc/GRAMMAR.md](doc/GRAMMAR.md) for details.
 
 ## Requirements
 

@@ -78,6 +78,40 @@ def _print_concise_error(exc: BaseException) -> None:
     typer.echo("(use --debug for full traceback)", err=True)
 
 
+def _run_lint(available_tools, taskflow: str, *, strict: bool, cli_model_config: str | None) -> int:
+    """Lint a taskflow and print issues. Returns a process exit code."""
+    from .linting import format_issues, lint_taskflow
+
+    issues = lint_taskflow(available_tools, taskflow, strict=strict, cli_model_config=cli_model_config)
+    typer.echo(format_issues(issues))
+    return 1 if any(i.severity == "error" for i in issues) else 0
+
+
+def _dump_schemas() -> None:
+    """Print the JSON Schema for each grammar document type."""
+    import json
+
+    from .models import DOCUMENT_MODELS
+
+    schemas = {name: model.model_json_schema() for name, model in DOCUMENT_MODELS.items()}
+    typer.echo(json.dumps(schemas, indent=2))
+
+
+def _print_manifest(session_id: str) -> int:
+    """Print a session's run manifest as JSON. Returns a process exit code."""
+    import json
+
+    from .session import TaskflowSession
+
+    try:
+        session = TaskflowSession.load(session_id)
+    except FileNotFoundError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        return 1
+    typer.echo(json.dumps(session.manifest(), indent=2))
+    return 0
+
+
 @app.command()
 def main(
     personality: Annotated[
@@ -112,6 +146,22 @@ def main(
         str | None,
         typer.Option("-m", "--model-config", help="Model configuration module path. Only relevant when running taskflows."),
     ] = None,
+    lint: Annotated[
+        bool,
+        typer.Option("--lint", help="Validate a taskflow (-t) and its references offline, without running it."),
+    ] = False,
+    strict: Annotated[
+        bool,
+        typer.Option("--strict", help="With --lint, treat unknown fields as errors instead of warnings."),
+    ] = False,
+    dump_schema: Annotated[
+        bool,
+        typer.Option("--schema", help="Print the JSON Schema for each grammar document type and exit."),
+    ] = False,
+    manifest: Annotated[
+        str | None,
+        typer.Option("--manifest", help="Print the run manifest for a session ID and exit."),
+    ] = None,
 ) -> None:
     """Run a taskflow or personality-based agent session."""
     # Debug mode from flag or env var
@@ -130,6 +180,22 @@ def main(
     _setup_logging()
 
     available_tools = AvailableTools()
+
+    # Schema dump mode (no model calls, no taskflow required)
+    if dump_schema:
+        _dump_schemas()
+        raise typer.Exit()
+
+    # Manifest mode: print a session's run manifest and exit.
+    if manifest:
+        raise typer.Exit(code=_print_manifest(manifest))
+
+    # Lint mode (no model calls)
+    if lint:
+        if not taskflow:
+            typer.echo("Error: --lint requires -t/--taskflow.", err=True)
+            raise typer.Exit(code=1)
+        raise typer.Exit(code=_run_lint(available_tools, taskflow, strict=strict, cli_model_config=model_config))
 
     # List models mode
     if list_models:

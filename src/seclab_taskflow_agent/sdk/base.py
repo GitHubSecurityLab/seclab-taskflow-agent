@@ -11,6 +11,7 @@ __all__ = [
     "MCPServerSpec",
     "StreamEvent",
     "TextDelta",
+    "TokenUsage",
     "ToolEnd",
 ]
 
@@ -34,7 +35,36 @@ class ToolEnd:
     text: str
 
 
-StreamEvent = Union[TextDelta, ToolEnd]
+@dataclass(frozen=True)
+class TokenUsage:
+    """Backend-neutral token usage for one model response.
+
+    Every adapter emits this as a stream event whenever its provider reports
+    usage, so the runner can gather and store token accounting uniformly
+    regardless of which SDK produced it.
+
+    ``cache_read_tokens`` are input tokens served from the prompt cache (the
+    cost saving) and ``cache_write_tokens`` are tokens written to it. Providers
+    that do not report a field (or are not caching) report 0.
+
+    Semantics note: providers differ on whether ``input_tokens`` already
+    includes cached tokens. The chat_completions surface (``openai_agents``,
+    ``copilot_sdk``) reports ``input_tokens`` INCLUSIVE of
+    ``cache_read_tokens`` (a subset of it), whereas the native Anthropic
+    Messages surface (``anthropic_sdk``) reports the counts as DISJOINT
+    (``input_tokens`` excludes cache reads/writes). Each adapter documents its
+    convention at the emit site; consumers doing cross-provider cost math must
+    account for this rather than assuming one arithmetic across backends.
+    """
+
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+StreamEvent = Union[TextDelta, ToolEnd, TokenUsage]
 
 
 @dataclass(frozen=True)

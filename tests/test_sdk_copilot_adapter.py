@@ -17,7 +17,7 @@ pytest.importorskip("copilot")
 from copilot.generated.session_events import SessionEventType
 
 from seclab_taskflow_agent.sdk import get_backend
-from seclab_taskflow_agent.sdk.base import AgentSpec, MCPServerSpec, TextDelta
+from seclab_taskflow_agent.sdk.base import AgentSpec, MCPServerSpec, TextDelta, TokenUsage
 from seclab_taskflow_agent.sdk.copilot_sdk.backend import (
     CopilotSDKBackend,
     _reasoning_effort,
@@ -108,6 +108,42 @@ def test_run_streamed_translates_deltas_until_idle():
     session, out = asyncio.run(_run())
     assert session.sent == ["go"]
     assert out == [TextDelta(text="hi "), TextDelta(text="there")]
+
+
+def test_run_streamed_emits_token_usage():
+    """An assistant.usage event is translated into a neutral TokenUsage."""
+
+    async def _run():
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        for ev in (
+            _Event(
+                SessionEventType.ASSISTANT_USAGE,
+                SimpleNamespace(
+                    model="claude-x",
+                    input_tokens=100,
+                    output_tokens=20,
+                    cache_read_tokens=64,
+                    cache_write_tokens=8,
+                ),
+            ),
+            _Event(SessionEventType.SESSION_IDLE),
+        ):
+            queue.put_nowait(ev)
+        handle = SimpleNamespace(client=None, session=_FakeSession(), event_queue=queue)
+        return [
+            event async for event in CopilotSDKBackend().run_streamed(handle, "go", max_turns=10)
+        ]
+
+    out = asyncio.run(_run())
+    assert out == [
+        TokenUsage(
+            model="claude-x",
+            input_tokens=100,
+            output_tokens=20,
+            cache_read_tokens=64,
+            cache_write_tokens=8,
+        )
+    ]
 
 
 def test_run_streamed_session_error_raises():
