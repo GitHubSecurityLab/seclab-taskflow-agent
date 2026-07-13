@@ -11,6 +11,21 @@ import typer
 from seclab_taskflow_agent.cli import _parse_global
 
 
+class TestBanner:
+    """Tests for startup banner rendering."""
+
+    def test_banner_includes_version(self, monkeypatch):
+        from seclab_taskflow_agent.__about__ import __version__
+        from seclab_taskflow_agent.banner import get_banner
+
+        monkeypatch.setattr("seclab_taskflow_agent.banner.get_AI_endpoint", lambda: "https://example.test")
+
+        banner = get_banner()
+
+        assert f"v{__version__}" in banner
+        assert "Default AI API Endpoint: https://example.test" in banner
+
+
 class TestParseGlobal:
     """Tests for _parse_global KEY=VALUE parsing."""
 
