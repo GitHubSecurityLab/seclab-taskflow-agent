@@ -3,6 +3,7 @@
 
 """ASCII banner displayed at agent startup."""
 
+from .__about__ import __version__
 from .capi import get_AI_endpoint
 
 __all__ = ["get_banner"]
@@ -35,7 +36,7 @@ def get_banner() -> str:
     ║                    ███████╗██║  ██║██████╔╝                      ║
     ║                    ╚══════╝╚═╝  ╚═╝╚═════╝                       ║
     ║                                                                  ║
-    ║                        TASKFLOW AGENT                            ║
+    ║                     TASKFLOW AGENT v{__version__:<29}║
     ║                                                                  ║
     ╠══════════════════════════════════════════════════════════════════╣
     ║ Default AI API Endpoint: {api_endpoint:<40}║
