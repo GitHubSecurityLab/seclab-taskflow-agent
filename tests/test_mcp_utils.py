@@ -196,3 +196,34 @@ def test_env_names_returns_sorted_names_or_none():
     assert _env_names({"B_VAR": "x", "A_VAR": "{{ env('A') }}"}) == ["A_VAR", "B_VAR"]
     assert _env_names({}) == []
     assert _env_names(None) is None
+
+
+@pytest.mark.parametrize("kind", ["streamable", "sse"])
+def test_mcp_client_params_resolves_remote_url_env(monkeypatch, kind):
+    # A remote toolbox sources its endpoint from the environment. The url must
+    # be env-templated the same way stdio args/env and headers already are, so
+    # `url: "{{ env('CONTAINER_SHELL_URL') }}"` reaches the client resolved.
+    monkeypatch.setenv("CONTAINER_SHELL_URL", "http://host.docker.internal:8765/mcp/")
+    server_params = SimpleNamespace(
+        kind=kind,
+        reconnecting=False,
+        url="{{ env('CONTAINER_SHELL_URL') }}",
+        headers=None,
+        optional_headers=None,
+        timeout=None,
+        command=None,
+        env=None,
+        args=None,
+    )
+    toolbox = SimpleNamespace(
+        server_params=server_params,
+        confirm=["container_shell_exec"],
+        server_prompt=None,
+        client_session_timeout=None,
+    )
+    available_tools = MagicMock()
+    available_tools.get_toolbox.return_value = toolbox
+
+    params = mcp_client_params(available_tools, ["pkg.remote"])
+
+    assert params["pkg.remote"][0]["url"] == "http://host.docker.internal:8765/mcp/"
