@@ -238,13 +238,13 @@ def mcp_client_params(
 
             case "sse":
                 headers = _resolve_headers(sp.headers, sp.optional_headers)
-                server_params["url"] = sp.url
+                server_params["url"] = swap_env(sp.url) if sp.url is not None else None
                 server_params["headers"] = headers
                 server_params["timeout"] = sp.timeout
 
             case "streamable":
                 headers = _resolve_headers(sp.headers, sp.optional_headers)
-                server_params["url"] = sp.url
+                server_params["url"] = swap_env(sp.url) if sp.url is not None else None
                 server_params["headers"] = headers
                 server_params["timeout"] = sp.timeout
 
