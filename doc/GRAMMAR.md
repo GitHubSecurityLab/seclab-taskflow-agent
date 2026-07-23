@@ -26,7 +26,7 @@ Example:
         This is a user prompt.
 ```
 
-Note: The exception to this rule are `run` shell tasks.
+Note: The exception to this rule is `run` shell tasks.
 
 ### Agents
 
@@ -43,7 +43,7 @@ personality: |
   You are a helpful assistant.
   
 task: |
-  Your primary task is to use available tools to complete user defined tasks.
+  Your primary task is to use available tools to complete user-defined tasks.
 
   Always use available tools to complete your tasks. If the tools you require
   to complete a task are not available, politely decline the task.
