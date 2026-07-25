@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# vLLM configuration example
+# vLLM is a high-performance inference engine that exposes an OpenAI-compatible API
+# Documentation: https://vllm.readthedocs.io/
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: model_config
+
+models:
+  local_llama: meta-llama/Llama-3.1-8B-Instruct
+
+model_settings:
+  local_llama:
+    api_type: chat_completions
+    endpoint: http://localhost:8000/v1
+    token: VLLM_API_KEY  # Can be any non-empty string or empty for local servers
+
+# Notes:
+# - Start vLLM server: vllm serve meta-llama/Llama-3.1-8B-Instruct --host 0.0.0.0 --port 8000
+# - Set VLLM_API_KEY to any non-empty string (e.g., export VLLM_API_KEY="dummy")
+# - vLLM supports both chat_completions and responses API types
+# - For tool calling, ensure your model supports it (e.g., Llama 3.1 with tool calling fine-tune)

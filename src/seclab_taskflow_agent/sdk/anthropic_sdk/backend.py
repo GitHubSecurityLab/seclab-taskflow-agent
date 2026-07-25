@@ -29,6 +29,7 @@ from ..errors import (
     BackendBadRequestError,
     BackendCapabilityError,
     BackendMaxTurnsError,
+    BackendQuotaExhaustedError,
     BackendRateLimitError,
     BackendTimeoutError,
     BackendUnexpectedError,
@@ -292,6 +293,52 @@ class AnthropicSDKBackend:
                     response = await stream.get_final_message()
 
             except anthropic.RateLimitError as exc:
+                # Distinguish transient rate limiting (retryable with
+                # backoff) from quota exhaustion (not retryable within
+                # the current billing period).
+                #
+                # Anthropic signals quota exhaustion via:
+                #   - HTTP 429 or 503
+                #   - error.type == "overloaded_error" or message
+                #     containing "overloaded" / "quota" / "capacity"
+                #
+                # If any of those markers are present, raise
+                # BackendQuotaExhaustedError so the caller knows not
+                # to retry blindly.  Otherwise fall back to the
+                # standard BackendRateLimitError (retryable).
+                status = getattr(exc, "status_code", None)
+                error_body = getattr(exc, "body", None) or {}
+                error_type = ""
+                error_message = ""
+                if isinstance(error_body, dict):
+                    err_obj = error_body.get("error", {})
+                    if isinstance(err_obj, dict):
+                        error_type = err_obj.get("type", "") or ""
+                        error_message = err_obj.get("message", "") or ""
+                # Also check the string representation as a fallback
+                # for SDK versions that don't expose .body cleanly.
+                exc_str = str(exc).lower()
+                is_overloaded = (
+                    error_type == "overloaded_error"
+                    or "overloaded" in error_type.lower()
+                    or "overloaded" in exc_str
+                    or "quota" in error_message.lower()
+                    or "quota" in exc_str
+                    or "capacity" in error_message.lower()
+                )
+                # 503 always indicates server-side overload (quota /
+                # capacity).  429 alone is the normal rate-limit signal
+                # and only indicates quota exhaustion when combined with
+                # an overloaded/quota/capacity keyword in the message.
+                is_quota_status = isinstance(status, int) and (
+                    status == 503
+                    or (status == 429 and is_overloaded)
+                )
+                if is_overloaded or is_quota_status:
+                    raise BackendQuotaExhaustedError(
+                        f"Anthropic quota/capacity exhausted (status={status}, "
+                        f"type={error_type!r}): {exc}"
+                    ) from exc
                 raise BackendRateLimitError(str(exc)) from exc
             except anthropic.APITimeoutError as exc:
                 raise BackendTimeoutError(str(exc)) from exc

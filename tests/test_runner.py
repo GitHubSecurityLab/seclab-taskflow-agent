@@ -173,7 +173,7 @@ class TestMergeReusableTask:
         at.get_taskflow.return_value = doc
 
         current = TaskDefinition(uses="pkg.multi")
-        with pytest.raises(ValueError, match="only contain 1 task"):
+        with pytest.raises(ValueError, match="must contain exactly 1 task"):
             _merge_reusable_task(at, current)
 
     def test_raises_if_reusable_not_found(self):
@@ -182,7 +182,7 @@ class TestMergeReusableTask:
         at.get_taskflow.return_value = None
 
         current = TaskDefinition(uses="pkg.missing")
-        with pytest.raises(ValueError, match="No such reusable taskflow"):
+        with pytest.raises(ValueError, match="Failed to load reusable taskflow"):
             _merge_reusable_task(at, current)
 
 

@@ -19,6 +19,105 @@ Agents can cooperate to complete sequences of tasks through so-called [taskflows
 
 You can find a detailed overview of the taskflow grammar [here](doc/GRAMMAR.md) and example taskflows [here](examples/taskflows/).
 
+## Quick Start
+
+Get up and running with the Taskflow Agent in 5 minutes.
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/GitHubSecurityLab/seclab-taskflow-agent.git
+cd seclab-taskflow-agent
+
+# Create and activate a virtual environment
+python -m venv .venv
+
+# On Windows
+.venv\Scripts\activate
+
+# On macOS/Linux
+source .venv/bin/activate
+
+# Install the package in editable mode
+pip install -e .
+```
+
+### Environment Configuration
+
+Set your GitHub Copilot API token:
+
+```bash
+# On Windows (PowerShell)
+$env:AI_API_TOKEN="your_github_token_here"
+
+# On macOS/Linux
+export AI_API_TOKEN="your_github_token_here"
+```
+
+If you plan to use GitHub MCP servers, also set:
+
+```bash
+export GH_TOKEN=$AI_API_TOKEN
+```
+
+### Run Your First Taskflow
+
+Try the echo taskflow to verify everything works:
+
+```bash
+python -m seclab_taskflow_agent -t examples.taskflows.echo
+```
+
+This runs a simple echo bot that demonstrates the basic taskflow execution.
+
+### Validate a Taskflow
+
+Before running a taskflow, you can validate it offline (no API calls):
+
+```bash
+python -m seclab_taskflow_agent --lint -t examples.taskflows.echo
+```
+
+### Troubleshooting
+
+**ModuleNotFoundError: No module named 'seclab_taskflow_agent'**
+
+Make sure you installed the package in editable mode:
+
+```bash
+pip install -e .
+```
+
+**API key errors (401 Unauthorized)**
+
+Verify your `AI_API_TOKEN` environment variable is set correctly:
+
+```bash
+# On Windows (PowerShell)
+echo $env:AI_API_TOKEN
+
+# On macOS/Linux
+echo $AI_API_TOKEN
+```
+
+**Dependency conflicts**
+
+If you encounter dependency conflicts, try using a fresh virtual environment:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+pip install -e .
+```
+
+### Next Steps
+
+- Learn about [Core Concepts](#core-concepts) and the YAML grammar
+- Explore [example taskflows](examples/taskflows/) for real-world use cases
+- Read the [detailed grammar documentation](doc/GRAMMAR.md)
+- Check out [Deploying from Source](#deploying-from-source) for advanced setup options
+
 ## Architecture
 
 ```
@@ -288,6 +387,16 @@ Example:
 CODEQL_DBS_BASE_PATH="/app/my_data/codeql_databases"
 AI_API_ENDPOINT="https://api.githubcopilot.com"
 ```
+
+### Custom LLM Providers
+
+The Taskflow Agent supports custom OpenAI-compatible endpoints including OpenRouter, vLLM, Ollama, and other providers. You can configure different endpoints per model in a `model_config` file.
+
+See [Custom LLM Providers Configuration](doc/custom-llm-providers.md) for detailed instructions on:
+- Configuring OpenRouter, vLLM, Ollama, and other providers
+- Per-model endpoint and API key configuration
+- Multi-provider taskflows
+- Troubleshooting common issues
 
 ## Deploying from Source
 

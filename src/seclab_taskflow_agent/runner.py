@@ -52,6 +52,7 @@ from .sdk import AgentSpec, MCPServerSpec, get_backend, resolve_backend_name
 from .sdk.errors import (
     BackendBadRequestError,
     BackendMaxTurnsError,
+    BackendQuotaExhaustedError,
     BackendTimeoutError,
     BackendUnexpectedError,
 )
@@ -90,14 +91,42 @@ def _resolve_model_config(
     Raises:
         ValueError: If the config file has structural problems.
     """
-    m_config: ModelConfigDocument = available_tools.get_model_config(model_config_ref)
+    try:
+        m_config: ModelConfigDocument = available_tools.get_model_config(model_config_ref)
+    except Exception as exc:
+        raise ValueError(
+            f"Failed to load model configuration '{model_config_ref}'.\n"
+            f"Error: {exc}\n"
+            f"Please verify:\n"
+            f"  1. The model config file exists and is accessible\n"
+            f"  2. The file path is correct (use dotted path without .yaml extension)\n"
+            f"  3. The file contains valid YAML with a 'models' section"
+        ) from exc
+    
     model_dict: dict[str, str] = m_config.models or {}
     model_keys: list[str] = list(model_dict.keys())
     models_params: dict[str, dict[str, Any]] = m_config.model_settings or {}
+    
+    if not model_dict:
+        raise ValueError(
+            f"Model configuration '{model_config_ref}' has no models defined.\n"
+            f"The 'models' section is empty or missing.\n"
+            f"Please add at least one model mapping in the format:\n"
+            f"  models:\n"
+            f"    logical_name: provider_model_id"
+        )
+    
     unknown = set(models_params) - set(model_keys)
     if unknown:
+        unknown_list = ", ".join(sorted(unknown))
+        known_list = ", ".join(sorted(model_keys)) if model_keys else "(none)"
         raise ValueError(
-            f"Settings section of model_config file {model_config_ref} contains models not in the model section: {unknown}"
+            f"Model configuration '{model_config_ref}' has settings for models not defined in the 'models' section.\n"
+            f"Unknown models in 'model_settings': {unknown_list}\n"
+            f"Defined models: {known_list}\n"
+            f"Please either:\n"
+            f"  1. Add the missing models to the 'models' section, or\n"
+            f"  2. Remove the settings for undefined models"
         )
     return model_keys, model_dict, models_params, m_config.api_type, m_config.backend
 
@@ -119,11 +148,24 @@ def _merge_reusable_task(
     Raises:
         ValueError: If the reusable taskflow is missing or has more than 1 task.
     """
-    reusable_doc = available_tools.get_taskflow(task.uses)
-    if reusable_doc is None:
-        raise ValueError(f"No such reusable taskflow: {task.uses}")
+    try:
+        reusable_doc = available_tools.get_taskflow(task.uses)
+    except Exception as exc:
+        raise ValueError(
+            f"Failed to load reusable taskflow '{task.uses}' referenced in task '{task.name or ''}'.\n"
+            f"Error: {exc}\n"
+            f"Please verify:\n"
+            f"  1. The reusable taskflow file exists and is accessible\n"
+            f"  2. The file path is correct (use dotted path without .yaml extension)\n"
+            f"  3. The file contains a valid taskflow definition"
+        ) from exc
+    
     if len(reusable_doc.taskflow) > 1:
-        raise ValueError("Reusable taskflows can only contain 1 task")
+        raise ValueError(
+            f"Reusable taskflow '{task.uses}' contains {len(reusable_doc.taskflow)} tasks.\n"
+            f"Reusable taskflows must contain exactly 1 task.\n"
+            f"Please modify the reusable taskflow to contain only one task definition."
+        )
     parent_task = reusable_doc.taskflow[0].task
     merged: dict[str, Any] = parent_task.model_dump(by_alias=True, exclude_defaults=True)
     current: dict[str, Any] = task.model_dump(by_alias=True, exclude_defaults=True)
@@ -195,7 +237,13 @@ def _resolve_task_model(
     """
     task_model_settings: dict[str, Any] | Any = task.model_settings or {}
     if not isinstance(task_model_settings, dict):
-        raise ValueError(f"model_settings in task {task.name or ''} needs to be a dictionary")
+        raise ValueError(
+            f"Invalid 'model_settings' in task '{task.name or ''}'.\n"
+            f"Expected a dictionary, got {type(task_model_settings).__name__}.\n"
+            f"Please ensure 'model_settings' is formatted as a YAML mapping:\n"
+            f"  model_settings:\n"
+            f"    key: value"
+        )
     return _resolve_one_model(
         task.model or DEFAULT_MODEL,
         task_model_settings,
@@ -390,7 +438,13 @@ def _resolve_task_models(
     for entry in task.effective_model_entries():
         entry_settings: dict[str, Any] | Any = entry.model_settings or {}
         if not isinstance(entry_settings, dict):
-            raise ValueError(f"model_settings in task {task.name or ''} needs to be a dictionary")
+            raise ValueError(
+                f"Invalid 'model_settings' in task '{task.name or ''}' for model '{entry.model}'.\n"
+                f"Expected a dictionary, got {type(entry_settings).__name__}.\n"
+                f"Please ensure 'model_settings' is formatted as a YAML mapping:\n"
+                f"  model_settings:\n"
+                f"    key: value"
+            )
         model_id, settings, api_type, endpoint, token, backend = _resolve_one_model(
             entry.model or DEFAULT_MODEL,
             entry_settings,
@@ -537,6 +591,7 @@ async def _build_prompts_to_run(
     inputs: dict[str, Any],
     outputs: dict[str, Any] | None = None,
     over: str = "",
+    task_name: str = "",
 ) -> list[str]:
     """Build the list of prompts to execute for a task.
 
@@ -588,12 +643,24 @@ async def _build_prompts_to_run(
                 )
             except jinja2.TemplateError as exc:
                 logging.critical("Could not evaluate over expression %r: %s", over, exc)
-                raise ValueError(f"Failed to evaluate 'over' expression: {exc}") from exc
+                raise ValueError(
+                    f"Failed to evaluate 'over' expression in task '{task_name}'.\n"
+                    f"Expression: {over}\n"
+                    f"Error: {exc}\n"
+                    f"Please check the Jinja2 syntax. Available context: globals, inputs, outputs"
+                ) from exc
         else:
             last = store.last()
             if last is None:
                 logging.critical("No last tool result available")
-                raise IndexError("No last tool result available for repeat_prompt")
+                raise IndexError(
+                    "No previous tool result available for 'repeat_prompt'.\n"
+                    f"In task '{task_name}', 'repeat_prompt' requires a previous task to produce output.\n"
+                    f"Please ensure:\n"
+                    f"  1. A previous task exists that produces tool output\n"
+                    f"  2. The previous task runs before this task\n"
+                    f"  3. Or use 'over' to specify an explicit iterable"
+                )
             iterable_result = decode_tool_result(last)
 
         # Materialise before testing/iterating: an ``over:`` expression may
@@ -1024,6 +1091,7 @@ async def run_main(
                 continue
 
             task = task_wrapper.task
+            task_name = task.name or f"task-{task_index}"
 
             # Reusable taskflow support: merge parent defaults into current task
             if task.uses:
@@ -1044,7 +1112,11 @@ async def run_main(
             inputs = task.inputs or {}
             task_prompt = task.user_prompt or ""
             if run and task_prompt:
-                raise ValueError("shell task and prompt task are mutually exclusive!")
+                raise ValueError(
+                    f"Task '{task_name}' has both 'run' and 'user_prompt' set.\n"
+                    f"A task must be either a shell task ('run') or a prompt task ('user_prompt'), not both.\n"
+                    f"Please remove one of these fields."
+                )
             must_complete = task.must_complete
             max_turns = task.max_steps or DEFAULT_MAX_TURNS
             toolboxes_override = task.toolboxes or []
@@ -1101,7 +1173,9 @@ async def run_main(
                     logging.error("Invalid task 'if' condition %r: %s", task.if_, e)
                     session.mark_failed(f"Task {task_name!r} has an invalid 'if' condition: {e}")
                     await render_model_output(
-                        f"** 🤖❗ Invalid 'if' condition: {e}\n"
+                        f"** 🤖❗ Invalid 'if' condition in task '{task_name}': {e}\n"
+                        f"** 🤖💡 Expression: {task.if_}\n"
+                        f"** 🤖💡 Check Jinja2 syntax and ensure referenced variables exist\n"
                         f"** 🤖💾 Session saved: {session.session_id}\n"
                         f"** 🤖💡 Resume with: --resume {session.session_id}\n"
                     )
@@ -1131,13 +1205,18 @@ async def run_main(
                     )
                 except jinja2.TemplateError as e:
                     logging.error("Template rendering error: %s", e)
-                    raise ValueError(f"Failed to render prompt template: {e}") from e
+                    raise ValueError(
+                        f"Failed to render prompt template in task '{task_name}'.\n"
+                        f"Template error: {e}\n"
+                        f"Please check the Jinja2 syntax in 'user_prompt'.\n"
+                        f"Available variables: globals, inputs, outputs"
+                    ) from e
 
             with TmpEnv(env, context={"globals": global_variables}):
                 prompts_to_run: list[str] = await _build_prompts_to_run(
                     task_prompt, repeat_prompt, store,
                     available_tools, global_variables, inputs,
-                    outputs=store.outputs, over=over,
+                    outputs=store.outputs, over=over, task_name=task_name,
                 )
 
                 # run_prompts hands the branches it built back to the task loop
@@ -1170,15 +1249,26 @@ async def run_main(
                             if p_val:
                                 current_agents.append(p_val)
                         for agent_name in current_agents:
-                            personality = available_tools.get_personality(agent_name)
-                            if personality is None:
-                                raise ValueError(f"No such personality: {agent_name}")
+                            try:
+                                personality = available_tools.get_personality(agent_name)
+                            except Exception as exc:
+                                raise ValueError(
+                                    f"Cannot find personality '{agent_name}' referenced in task '{task_name}'.\n"
+                                    f"Error: {exc}\n"
+                                    f"Please verify:\n"
+                                    f"  1. The personality file exists (e.g., examples/personalities/{agent_name}.yaml)\n"
+                                    f"  2. The file path is correct (use dotted path without .yaml extension)\n"
+                                    f"  3. The file contains a valid personality definition with filetype: personality"
+                                ) from exc
                             resolved_agents[agent_name] = personality
 
                         if not resolved_agents:
                             raise ValueError(
-                                "No agents resolved for this task. "
-                                "Specify a personality with -p or provide an agents list."
+                                f"No agents resolved for task '{task_name}'.\n"
+                                f"Please either:\n"
+                                f"  1. Specify a personality with -p/--personality\n"
+                                f"  2. Add an 'agents' list to the task definition\n"
+                                f"  3. Reference a personality in the prompt using @personality_name"
                             )
                         resolved_prompts.append((resolved_agents, p_prompt))
 
@@ -1304,6 +1394,27 @@ async def run_main(
                         break
                     except (KeyboardInterrupt, SystemExit):
                         raise
+                    except BackendQuotaExhaustedError as exc:
+                        # Quota exhausted — do NOT retry. Unlike rate-limit errors
+                        # (which trigger a short backoff and retry within
+                        # drive_backend_stream), quota exhaustion means the
+                        # account/org has consumed its allocated tokens or
+                        # requests for the current billing period. Retrying
+                        # would only waste time and produce identical failures.
+                        # Save the session checkpoint so the user can resume
+                        # after their quota resets or they top up.
+                        last_task_error = exc
+                        session.mark_failed(f"Task {task_name!r}: {exc}")
+                        await render_model_output(
+                            f"** 🤖❗ Backend quota exhausted: {exc}\n"
+                            f"** 🤖💡 Please wait for your quota to reset or check your usage.\n"
+                            f"** 🤖💾 Session saved: {session.session_id}\n"
+                            f"** 🤖💡 Resume with: --resume {session.session_id}\n"
+                        )
+                        logging.error(
+                            "Task %r aborted: backend quota exhausted (no retry).", task_name
+                        )
+                        break
                     except (BackendTimeoutError, ConnectionError, TimeoutError) as exc:
                         last_task_error = exc
                         remaining = TASK_RETRY_LIMIT - attempt - 1

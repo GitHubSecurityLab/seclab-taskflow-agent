@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# Ollama configuration example
+# Ollama makes it easy to run open-source LLMs locally with an OpenAI-compatible API
+# Documentation: https://github.com/ollama/ollama
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: model_config
+
+models:
+  llama_local: llama3.1:8b
+  qwen_local: qwen2.5:7b
+
+model_settings:
+  llama_local:
+    api_type: chat_completions
+    endpoint: http://localhost:11434/v1
+    token: OLLAMA_API_KEY
+  qwen_local:
+    api_type: chat_completions
+    endpoint: http://localhost:11434/v1
+    token: OLLAMA_API_KEY
+
+# Notes:
+# - Install Ollama: curl -fsSL https://ollama.ai/install.sh | sh
+# - Start Ollama service: ollama serve
+# - Pull a model: ollama pull llama3.1:8b
+# - Set OLLAMA_API_KEY to any non-empty string (e.g., export OLLAMA_API_KEY="ollama")
+# - Ollama's OpenAI compatibility layer is available at /v1 endpoint
+# - For tool calling, use models that explicitly support it (e.g., llama3.1, mistral, qwen2.5)

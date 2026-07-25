@@ -14,6 +14,7 @@ __all__ = [
     "BackendCapabilityError",
     "BackendError",
     "BackendMaxTurnsError",
+    "BackendQuotaExhaustedError",
     "BackendRateLimitError",
     "BackendTimeoutError",
     "BackendUnexpectedError",
@@ -38,7 +39,19 @@ class BackendTimeoutError(BackendError):
 
 
 class BackendRateLimitError(BackendError):
-    """The backend was rate-limited by the upstream API."""
+    """The backend was rate-limited by the upstream API.
+
+    This error is retryable with appropriate backoff.
+    """
+
+
+class BackendQuotaExhaustedError(BackendError):
+    """The backend quota has been exhausted (e.g., token budget, request limit).
+
+    Unlike rate limiting, quota exhaustion is not retryable within the current
+    billing period or allocation cycle. The caller should check their usage
+    limits or wait until the quota resets.
+    """
 
 
 class BackendBadRequestError(BackendError):

@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-License-Identifier: MIT
+
+# OpenRouter configuration example
+# OpenRouter provides unified access to multiple LLM providers through a single OpenAI-compatible API
+# Get your API key at: https://openrouter.ai/keys
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: model_config
+
+models:
+  claude: claude-3.5-sonnet
+  gpt4: gpt-4-turbo
+  llama: meta-llama/llama-3.1-70b-instruct
+
+model_settings:
+  claude:
+    api_type: chat_completions
+    endpoint: https://openrouter.ai/api/v1
+    token: OPENROUTER_API_KEY
+  gpt4:
+    api_type: chat_completions
+    endpoint: https://openrouter.ai/api/v1
+    token: OPENROUTER_API_KEY
+  llama:
+    api_type: chat_completions
+    endpoint: https://openrouter.ai/api/v1
+    token: OPENROUTER_API_KEY

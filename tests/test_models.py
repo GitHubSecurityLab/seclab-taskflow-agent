@@ -179,7 +179,7 @@ class TestMultiModel:
             TaskDefinition(user_prompt="hi", models="gpt_default")
 
     def test_invalid_models_entry_rejected(self):
-        with pytest.raises(ValidationError, match="invalid 'models' entry"):
+        with pytest.raises(ValidationError, match="Invalid entry at index"):
             TaskDefinition(user_prompt="hi", models=[123])
 
 

@@ -19,6 +19,7 @@ from ..base import AgentSpec, StreamEvent, TextDelta, TokenUsage
 from ..errors import (
     BackendBadRequestError,
     BackendMaxTurnsError,
+    BackendQuotaExhaustedError,
     BackendRateLimitError,
     BackendTimeoutError,
     BackendUnexpectedError,
@@ -141,7 +142,46 @@ class OpenAIAgentsBackend:
         except MaxTurnsExceeded as exc:
             raise BackendMaxTurnsError(str(exc)) from exc
         except RateLimitError as exc:
-            raise BackendRateLimitError(str(exc)) from exc
+            # Distinguish between rate limiting and quota exhaustion.
+            # Both return HTTP 429, but quota exhaustion is not retryable.
+            #
+            # OpenAI API quota exhaustion indicators:
+            # - error.code = "insufficient_quota"
+            # - error.message contains "quota" or "billing"
+            # - HTTP status code 429 (same as rate limiting)
+            #
+            # Rate limiting is temporary (retryable with backoff).
+            # Quota exhaustion requires waiting for quota reset or billing cycle.
+            is_quota = False
+            
+            # Check HTTP status code (should be 429 for both cases)
+            if getattr(exc, "status_code", None) == 429:
+                # Extract error details from the exception body
+                error_body = getattr(exc, "body", {}) or {}
+                error_obj = error_body.get("error", {}) if isinstance(error_body, dict) else {}
+                
+                # Check error.code field
+                error_code = str(error_obj.get("code", "")).lower()
+                if "quota" in error_code or "insufficient_quota" in error_code:
+                    is_quota = True
+                
+                # Check error.message field
+                error_msg = str(error_obj.get("message", "")).lower()
+                if not is_quota and ("quota" in error_msg or "billing" in error_msg):
+                    is_quota = True
+                
+                # Also check the string representation as fallback
+                if not is_quota:
+                    exc_str = str(exc).lower()
+                    if "quota" in exc_str or "billing" in exc_str:
+                        is_quota = True
+            
+            if is_quota:
+                raise BackendQuotaExhaustedError(
+                    f"API quota exhausted: {exc}"
+                ) from exc
+            else:
+                raise BackendRateLimitError(str(exc)) from exc
         except (APITimeoutError, APIConnectionError) as exc:
             raise BackendTimeoutError(str(exc)) from exc
         except BadRequestError as exc:

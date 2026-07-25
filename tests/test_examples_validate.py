@@ -33,7 +33,7 @@ def _grammar_files() -> list[str]:
     kept: list[str] = []
     for f in files:
         try:
-            data = yaml.safe_load(Path(f).read_text())
+            data = yaml.safe_load(Path(f).read_text(encoding='utf-8'))
         except Exception:  # noqa: BLE001 - reported by the validation test
             kept.append(f)
             continue
@@ -50,7 +50,7 @@ def _dotted(path: str) -> str:
 def _taskflow_dotted_paths() -> list[str]:
     paths: list[str] = []
     for f in sorted(glob.glob("examples/taskflows/**/*.yaml", recursive=True)):
-        data = yaml.safe_load(Path(f).read_text())
+        data = yaml.safe_load(Path(f).read_text(encoding='utf-8'))
         if isinstance(data, dict) and (data.get("seclab-taskflow-agent") or {}).get("filetype") == "taskflow":
             paths.append(_dotted(f))
     return paths
@@ -59,7 +59,7 @@ def _taskflow_dotted_paths() -> list[str]:
 @pytest.mark.parametrize("path", _grammar_files())
 def test_bundled_document_validates(path: str) -> None:
     """Every shipped grammar document parses and validates against its model."""
-    data = yaml.safe_load(Path(path).read_text())
+    data = yaml.safe_load(Path(path).read_text(encoding='utf-8'))
     assert isinstance(data, dict), f"{path}: not a mapping"
     filetype = (data.get("seclab-taskflow-agent") or {}).get("filetype")
     model = DOCUMENT_MODELS.get(filetype)
