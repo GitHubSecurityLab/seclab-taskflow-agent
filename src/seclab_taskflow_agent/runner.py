@@ -737,12 +737,17 @@ async def deploy_task_agents(
             )
         )
 
-    # Connect MCP servers
+    # Connect MCP servers with timeout protection
     servers_connected = asyncio.Event()
     start_cleanup = asyncio.Event()
     mcp_sessions = asyncio.create_task(mcp_session_task(entries, servers_connected, start_cleanup))
 
-    await servers_connected.wait()
+    try:
+        await asyncio.wait_for(servers_connected.wait(), timeout=30.0)
+    except asyncio.TimeoutError:
+        logging.error("MCP servers connection timeout after 30 seconds")
+        mcp_sessions.cancel()
+        raise RuntimeError("MCP servers failed to connect within timeout")
     logging.debug("All mcp servers are connected!")
 
     agent_handle = None
@@ -848,6 +853,7 @@ async def deploy_task_agents(
         except BackendTimeoutError as e:
             await render_model_output(f"** 🤖❗ Timeout Error: {e}\n", async_task=async_task, task_id=task_id)
             logging.exception("API Timeout")
+            raise  # Re-raise so the outer retry loop can handle transient timeouts
 
         if async_task:
             await flush_async_output(task_id, label=stream_label)
@@ -1149,7 +1155,11 @@ async def run_main(
                     if run:
                         await render_model_output("** 🤖🐚 Executing Shell Task\n")
                         try:
-                            content = shell_tool_call(run).content[0]
+                            result = await asyncio.to_thread(shell_tool_call, run)
+                            if not result.content:
+                                store.record(ToolResult(tool_name="shell", text=""))
+                                return True
+                            content = result.content[0]
                             store.record(ToolResult(tool_name="shell", text=getattr(content, "text", "")))
                             return True
                         except RuntimeError as e:

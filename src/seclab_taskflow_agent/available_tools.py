@@ -121,7 +121,7 @@ class AvailableTools:
                     f"Cannot load {toolname} because {pkg_dir} is not a valid directory."
                 )
             filepath = pkg_dir.joinpath(filename + ".yaml")
-            with filepath.open() as fh:
+            with filepath.open(encoding="utf-8") as fh:
                 raw = yaml.safe_load(fh)
 
             # Validate header before full parse
