@@ -258,19 +258,15 @@ class TestModelSettingsErrorMessages:
 
     def test_model_settings_not_dict(self):
         """Test error message when model_settings is not a dictionary."""
-        from seclab_taskflow_agent.runner import _resolve_task_model
-        
-        task = TaskDefinition(
-            name="test-task",
-            model="gpt-4",
-            model_settings="not-a-dict"  # type: ignore
-        )
-        
-        with pytest.raises(ValueError) as exc_info:
-            _resolve_task_model(task, [], {}, {})
-        
+        # Pydantic validates model_settings at TaskDefinition construction time,
+        # so we test that ValidationError is raised with a clear message
+        with pytest.raises(ValidationError) as exc_info:
+            TaskDefinition(
+                name="test-task",
+                model="gpt-4",
+                model_settings="not-a-dict"  # type: ignore
+            )
+
         error_msg = str(exc_info.value)
         assert "model_settings" in error_msg
-        assert "test-task" in error_msg
-        assert "dictionary" in error_msg.lower()
-        assert "YAML mapping" in error_msg or "format" in error_msg.lower()
+        assert "dictionary" in error_msg.lower() or "dict" in error_msg.lower()
