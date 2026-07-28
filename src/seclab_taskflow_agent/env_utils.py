@@ -76,7 +76,8 @@ class TmpEnv:
             raise
 
     def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any | None) -> None:
-        for k, v in self.env.items():
-            del os.environ[k]
+        for k in self.env.keys():
             if k in self.restore_env:
                 os.environ[k] = self.restore_env[k]
+            else:
+                os.environ.pop(k, None)
