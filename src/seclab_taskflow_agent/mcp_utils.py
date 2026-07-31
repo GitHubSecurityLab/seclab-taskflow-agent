@@ -44,6 +44,16 @@ DEFAULT_MCP_CLIENT_SESSION_TIMEOUT: int = 120
 # We hash long names down to this many hex characters.
 COMPRESSED_NAME_LENGTH: int = 12
 
+# Gemini requires a function name to begin with a letter or an underscore, and
+# a hex digest begins with a digit ten times in sixteen. Left bare, a namespace
+# yields tool names such as ``8fb2adfa03efcontainer_shell_exec``, which Gemini
+# refuses with 400 ``invalid_request_body`` for the whole request, so one
+# unlucky digest takes down every tool in the run and not just that server's.
+# OpenAI and Anthropic document the laxer ``^[a-zA-Z0-9_-]{1,64}$`` and do
+# accept a leading digit, which is why this presents as a model-specific fault.
+# https://ai.google.dev/api/caching#FunctionDeclaration
+COMPRESSED_NAME_PREFIX: str = "ns"
+
 
 def compress_name(name: str) -> str:
     """Return a short hash of *name* to fit the OpenAI 64-char tool-name limit.
@@ -52,11 +62,12 @@ def compress_name(name: str) -> str:
         name: The original tool / toolbox name.
 
     Returns:
-        A 12-character lowercase hex digest.
+        A lowercase hex digest of ``COMPRESSED_NAME_LENGTH`` characters, behind
+        a fixed prefix so the result always starts with a letter.
     """
     m = hashlib.sha256()
     m.update(name.encode("utf-8"))
-    return m.hexdigest()[:COMPRESSED_NAME_LENGTH]
+    return COMPRESSED_NAME_PREFIX + m.hexdigest()[:COMPRESSED_NAME_LENGTH]
 
 
 class MCPNamespaceWrap:

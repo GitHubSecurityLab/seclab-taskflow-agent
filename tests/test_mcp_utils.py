@@ -134,6 +134,36 @@ def test_list_tools_unfiltered_idempotent_on_prefixed_input():
     assert not result[0].name.startswith(f"{ns}{ns}")
 
 
+# -- compress_name() --
+
+
+@pytest.mark.parametrize(
+    "server_name",
+    # "ContainerShell" is one whose sha256 starts with a digit, which is what
+    # made this show up as an intermittent failure of unrelated toolboxes.
+    ["ContainerShell", "RepoContext", "FindingLedger", "RepoSurvey", "", "x" * 200],
+)
+def test_compress_name_starts_with_a_letter(server_name):
+    """Gemini rejects a function name that starts with a digit.
+
+    A namespace is prefixed to every tool a server exposes, so a digest
+    beginning with a digit produces names like `8fb2adfa03efcontainer_shell_exec`.
+    Gemini answers 400 `invalid_request_body` to the whole request, taking down
+    every tool in the run and not just the offending server's.
+    """
+    assert compress_name(server_name)[0].isalpha()
+
+
+def test_compress_name_is_stable_and_distinct():
+    assert compress_name("RepoContext") == compress_name("RepoContext")
+    assert compress_name("RepoContext") != compress_name("RepoSurvey")
+
+
+def test_compress_name_leaves_room_under_the_64_character_limit():
+    """The prefix must not eat the headroom the compression exists to create."""
+    assert len(compress_name("x" * 200)) + len("a_very_long_tool_name_indeed") <= 64
+
+
 # -- list_tools() (regression) --
 
 
