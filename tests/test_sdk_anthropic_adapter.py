@@ -222,7 +222,7 @@ def test_call_tool_result_to_text_preserves_empty_among_nonempty():
 
 
 def test_known_provider_uses_bearer_auth():
-    """Known CAPI providers should have bearer_auth=True."""
+    """Known providers like CAPI should have bearer_auth=True."""
     from seclab_taskflow_agent.capi import get_provider
 
     provider = get_provider("https://api.githubcopilot.com")
