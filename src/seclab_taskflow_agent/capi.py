@@ -3,7 +3,7 @@
 
 """AI API endpoint and token management.
 
-Supports multiple API providers (GitHub Copilot, GitHub Models, OpenAI, and
+Supports multiple API providers (GitHub Copilot, OpenAI, and
 custom endpoints).  All provider-specific behaviour is captured in a single
 ``APIProvider`` dataclass so that adding a new provider only requires one
 registry entry instead of changes scattered across multiple match/case blocks.
@@ -91,19 +91,6 @@ class _CopilotProvider(APIProvider):
         )
 
 
-class _GitHubModelsProvider(APIProvider):
-    """GitHub Models API (models.github.ai)."""
-
-    def parse_models_list(self, body: Any) -> list[dict]:
-        # Models API returns a bare list, not {"data": [...]}
-        if isinstance(body, list):
-            return body
-        return super().parse_models_list(body)
-
-    def check_tool_calls(self, _model: str, model_info: dict) -> bool:
-        return "tool-calling" in model_info.get("capabilities", [])
-
-
 class _OpenAIProvider(APIProvider):
     """OpenAI API (api.openai.com).
 
@@ -126,12 +113,6 @@ _PROVIDERS: dict[str, APIProvider] = {
         base_url="https://api.githubcopilot.com",
         default_model="gpt-4.1",
         extra_headers={"Copilot-Integration-Id": COPILOT_INTEGRATION_ID},
-    ),
-    "models.github.ai": _GitHubModelsProvider(
-        name="github-models",
-        base_url="https://models.github.ai/inference",
-        models_catalog="/catalog/models",
-        default_model="openai/gpt-4.1",
     ),
     "api.openai.com": _OpenAIProvider(
         name="openai",
