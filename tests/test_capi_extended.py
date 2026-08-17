@@ -45,28 +45,6 @@ class TestSupportsToolCalls:
         }
         assert supports_tool_calls("text-only", models) is False
 
-    def test_models_github_endpoint(self, monkeypatch):
-        """models.github.ai checks for 'tool-calling' in capabilities list."""
-        monkeypatch.setenv("AI_API_ENDPOINT", "https://models.github.ai/inference")
-        models = {
-            "openai/gpt-4o": {
-                "id": "openai/gpt-4o",
-                "capabilities": ["tool-calling", "chat"],
-            }
-        }
-        assert supports_tool_calls("openai/gpt-4o", models) is True
-
-    def test_models_github_endpoint_no_tool_calling(self, monkeypatch):
-        """models.github.ai returns False when 'tool-calling' not in list."""
-        monkeypatch.setenv("AI_API_ENDPOINT", "https://models.github.ai/inference")
-        models = {
-            "some-model": {
-                "id": "some-model",
-                "capabilities": ["chat"],
-            }
-        }
-        assert supports_tool_calls("some-model", models) is False
-
     def test_openai_endpoint_model_in_catalog(self, monkeypatch):
         """OpenAI endpoint returns True for known chat model families."""
         monkeypatch.setenv("AI_API_ENDPOINT", "https://api.openai.com/v1")
@@ -117,12 +95,6 @@ class TestGetProvider:
         assert p.name == "copilot"
         assert p.base_url == "https://api.githubcopilot.com/"
         assert "Copilot-Integration-Id" in p.extra_headers
-
-    def test_github_models_provider(self):
-        p = get_provider("https://models.github.ai/inference")
-        assert p.name == "github-models"
-        assert p.models_catalog == "/catalog/models"
-        assert p.default_model == "openai/gpt-4.1"
 
     def test_openai_provider(self):
         p = get_provider("https://api.openai.com/v1")

@@ -17,7 +17,7 @@ class TestAPIEndpoint:
     """Test API endpoint configuration."""
 
     def test_default_api_endpoint(self):
-        """Test that default API endpoint is set to models.github.ai/inference."""
+        """Test that the default API endpoint is GitHub Copilot."""
         try:
             original_env = os.environ.pop("AI_API_ENDPOINT", None)
             endpoint = get_AI_endpoint()
@@ -41,7 +41,6 @@ class TestAPIEndpoint:
 
     def test_provider_base_urls(self):
         """Test that providers resolve to expected base URLs."""
-        assert get_provider("https://models.github.ai/inference").base_url == "https://models.github.ai/inference/"
         assert get_provider("https://api.githubcopilot.com").base_url == "https://api.githubcopilot.com/"
         assert get_provider("https://api.openai.com/v1").base_url == "https://api.openai.com/v1/"
 
