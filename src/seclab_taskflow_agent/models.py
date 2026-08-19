@@ -79,9 +79,8 @@ class TaskflowHeader(BaseModel):
     @classmethod
     def _validate_version(cls, v: str) -> str:
         if v != SUPPORTED_VERSION:
-            raise ValueError(
-                f"Unsupported version: {v}. Only version {SUPPORTED_VERSION} is supported."
-            )
+            msg = f"Unsupported version: {v}. Only version {SUPPORTED_VERSION} is supported."
+            raise ValueError(msg)
         return v
 
 
