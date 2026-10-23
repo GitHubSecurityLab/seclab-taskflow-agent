@@ -175,6 +175,7 @@ extend-exclude = ["src/seclab_taskflow_agent/mcp_servers/codeql/jsonrpyc/"]
 ignore = [
   # Style choices — deliberate project conventions
   "EM101",    # Exception string literals
+  "G004",     # Logging f-strings
   "EM102",    # Exception f-strings
   "T201",     # print() used for user output
   "TRY003",   # Raise with inline message strings
