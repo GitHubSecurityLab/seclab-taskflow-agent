@@ -42,7 +42,7 @@ dependencies = [
   "anyio==4.14.2",
   "attrs==25.3.0",
   "Authlib==1.6.12",
-  "certifi==2025.6.15",
+  "certifi==2026.10.19",
   "cffi==2.0.0",
   "charset-normalizer==3.4.2",
   "click==8.2.1",
