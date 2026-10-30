@@ -62,6 +62,7 @@ def test_registers_and_invokes_existing_mcp_connection(kind):
         assert tool.parameters == {"type": "object"}
         assert not tool.skip_permission
         assert not tool.is_terminal
+        assert tool.defer == "never"
         return await tool.handler(ToolInvocation(tool_name=tool.name, arguments={"value": 42}))
 
     result = asyncio.run(_run())
@@ -76,6 +77,30 @@ def test_blocked_tools_are_not_registered(namespaced):
     blocked = server.namespace + "echo" if namespaced else "echo"
     assert asyncio.run(_tools(server, blocked=[blocked])) == []
     transport.call_tool.assert_not_awaited()
+
+
+@pytest.mark.parametrize("namespaced", [False, True])
+def test_paginated_tools_are_filtered_and_invoked_through_the_wrapper(namespaced):
+    server, transport = _server(confirms=["later"])
+    server.confirm_tool = Mock(return_value=True)
+    transport.session.list_tools.side_effect = [
+        ListToolsResult(tools=[Tool(name="echo", inputSchema={})], nextCursor="next"),
+        ListToolsResult(
+            tools=[Tool(name="blocked", inputSchema={}), Tool(name="later", inputSchema={})],
+        ),
+    ]
+    blocked = server.namespace + "blocked" if namespaced else "blocked"
+
+    async def _run():
+        tools = {tool.name.removeprefix(server.namespace): tool for tool in await _tools(server, blocked=[blocked])}
+        assert set(tools) == {"echo", "later"}
+        tool = tools["later"]
+        return await tool.handler(ToolInvocation(tool_name=tool.name, arguments={"value": 42}))
+
+    result = asyncio.run(_run())
+    assert result.result_type == "success"
+    server.confirm_tool.assert_called_once_with("later", [{"value": 42}])
+    transport.call_tool.assert_awaited_once_with("later", {"value": 42})
 
 
 @pytest.mark.parametrize("approved", [False, True])
@@ -171,6 +196,51 @@ def test_preserves_structured_results_and_images():
     assert json.loads(result.text_result_for_llm) == {"value": [1, 2, 3]}
     assert result.binary_results_for_llm[0].data == "aW1hZ2U="
     assert result.binary_results_for_llm[0].mime_type == "image/png"
+
+
+@pytest.mark.parametrize("structured", [{"items": [1, 2, 3]}, {}, {"result": [1, 2, 3]}])
+def test_structured_payload_takes_precedence_over_text(structured):
+    server, transport = _server()
+    transport.call_tool.return_value = CallToolResult(
+        content=[TextContent(type="text", text="Found 3 items")],
+        structuredContent=structured,
+    )
+
+    async def _run():
+        (tool,) = await _tools(server)
+        return await tool.handler(ToolInvocation(tool_name=tool.name))
+
+    result = asyncio.run(_run())
+    assert json.loads(result.text_result_for_llm) == structured
+
+
+@pytest.mark.parametrize(
+    ("structured", "expected"),
+    [
+        ({"result": "[1, 2, 3]"}, [1, 2, 3]),
+        ({"result": [1, 2, 3]}, [1, 2, 3]),
+        ({"result": [1, 2, 3], "extra": True}, {"result": [1, 2, 3], "extra": True}),
+    ],
+)
+def test_structured_fastmcp_envelopes_preserve_original_payloads(structured, expected):
+    server, transport = _server()
+    transport.session.list_tools.return_value.tools[0].outputSchema = {
+        "type": "object",
+        "properties": {"result": {}},
+        "required": ["result"],
+        "x-fastmcp-wrap-result": True,
+    }
+    transport.call_tool.return_value = CallToolResult(
+        content=[TextContent(type="text", text="Found 3 items")],
+        structuredContent=structured,
+    )
+
+    async def _run():
+        (tool,) = await _tools(server)
+        return await tool.handler(ToolInvocation(tool_name=tool.name))
+
+    result = asyncio.run(_run())
+    assert json.loads(result.text_result_for_llm) == expected
 
 
 def test_raw_mcp_specs_cannot_bypass_runner_policy():

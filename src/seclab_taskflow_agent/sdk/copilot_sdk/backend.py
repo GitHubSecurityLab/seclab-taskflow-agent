@@ -190,7 +190,9 @@ def _check_model(event: Any, expected: str) -> None:
 
 
 async def _verify_model(client: Any, model: str) -> None:
-    """Ensure *model* is in the authenticated user's catalogue and enabled."""
+    """Validate concrete models; ``auto`` is a router alias, not a catalogue ID."""
+    if model == AUTO_MODEL:
+        return
     models = await client.list_models()
     for info in models:
         if getattr(info, "id", None) != model:
@@ -291,6 +293,8 @@ class CopilotSDKBackend:
                 on_permission_request=build_permission_handler([tool.name for tool in tools]),
                 tools=tools,
                 available_tools=available_tools,
+                # The custom-only policy cannot retrieve SDK-offloaded files.
+                large_output={"enabled": False},
                 streaming=True,
                 include_sub_agent_streaming_events=False,
                 reasoning_effort=reasoning_effort,
@@ -375,6 +379,11 @@ class CopilotSDKBackend:
                 event = await agent.event_queue.get()
                 etype = getattr(event, "type", None)
                 data = getattr(event, "data", None)
+
+                if etype == SessionEventType.ASSISTANT_MESSAGE and getattr(
+                    data, "originating_message_id", None
+                ) not in (None, message_id):
+                    continue
 
                 if getattr(event, "agent_id", None):
                     # Sub-agent events: account for usage only.

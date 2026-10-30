@@ -231,6 +231,19 @@ def test_run_streamed_does_not_duplicate_streamed_message():
     assert out == [TextDelta(text="part")]
 
 
+@pytest.mark.parametrize("foreign_model", [MODEL, "other-model"])
+def test_run_streamed_ignores_full_messages_from_other_requests(foreign_model):
+    foreign = _ev(
+        SessionEventType.ASSISTANT_MESSAGE,
+        content="old response",
+        message_id="old",
+        originating_message_id="other-request",
+        model=foreign_model,
+    )
+    _, out = _stream([_started(), foreign, _delta("current response"), _idle()])
+    assert out == [TextDelta(text="current response")]
+
+
 def test_streaming_with_public_sdk_event_types():
     def event(etype, data):
         return SessionEvent(type=etype, data=data, id=uuid4(), timestamp=datetime.now(timezone.utc))
@@ -636,6 +649,7 @@ def test_build_uses_explicit_token_and_pins_session(fake_client, caplog):
     assert kw["streaming"] is True
     assert kw["reasoning_effort"] == "max"
     assert kw["available_tools"].to_list() == ["custom:nsecho"]
+    assert kw["large_output"] == {"enabled": False}
     assert [tool.name for tool in kw["tools"]] == ["nsecho"]
     assert "mcp_servers" not in kw
     assert kw["enable_config_discovery"] is False
@@ -655,6 +669,13 @@ def test_build_uses_explicit_token_and_pins_session(fake_client, caplog):
 def test_build_strips_provider_prefix(fake_client):
     _build(model="openai/" + MODEL)
     assert fake_client.instances[0].create_kwargs["model"] == MODEL
+
+
+def test_build_auto_accepts_a_concrete_only_model_catalogue(fake_client):
+    fake_client.models = [_model(MODEL)]
+    handle = _build(model="auto")
+    assert handle.model == "auto"
+    assert fake_client.instances[0].create_kwargs["model"] == "auto"
 
 
 def test_build_without_instructions_sends_no_system_message(fake_client):
@@ -689,10 +710,11 @@ def test_build_without_any_token_uses_sdk_default_auth(fake_client, monkeypatch)
     assert fake_client.instances[0].kwargs == {}
 
 
-def test_build_authentication_failure_is_actionable_and_stops_client(fake_client):
+@pytest.mark.parametrize("model", [MODEL, "auto"])
+def test_build_authentication_failure_is_actionable_and_stops_client(fake_client, model):
     fake_client.authenticated = False
     with pytest.raises(BackendBadRequestError, match="authentication failed"):
-        _build()
+        _build(model=model)
     (client,) = fake_client.instances
     assert client.create_kwargs is None
     assert client.stopped

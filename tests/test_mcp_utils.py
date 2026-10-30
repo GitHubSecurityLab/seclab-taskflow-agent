@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -56,6 +56,34 @@ def test_list_tools_unfiltered_prefixes_names_from_session():
     assert len(result) == 2
     assert result[0].name == f"{ns}read_file"
     assert result[1].name == f"{ns}write_file"
+
+
+def test_list_tools_unfiltered_follows_cursors_through_empty_pages():
+    session = SimpleNamespace(
+        list_tools=AsyncMock(
+            side_effect=[
+                SimpleNamespace(tools=[_FakeTool("first")], nextCursor="page2"),
+                SimpleNamespace(tools=[], nextCursor="page3"),
+                SimpleNamespace(tools=[_FakeTool("last")], nextCursor=None),
+            ]
+        )
+    )
+    wrapper = _make_wrapper("RepoContext", session=session)
+
+    result = asyncio.run(wrapper.list_tools_unfiltered())
+
+    assert [tool.name for tool in result] == [wrapper.namespace + "first", wrapper.namespace + "last"]
+    assert session.list_tools.await_args_list == [call(), call(cursor="page2"), call(cursor="page3")]
+
+
+def test_list_tools_unfiltered_rejects_repeated_cursors():
+    page = SimpleNamespace(tools=[], nextCursor="repeated")
+    session = SimpleNamespace(list_tools=AsyncMock(side_effect=[page, page]))
+    wrapper = _make_wrapper("RepoContext", session=session)
+
+    with pytest.raises(RuntimeError, match=r"repeated.*cursor"):
+        asyncio.run(wrapper.list_tools_unfiltered())
+    assert session.list_tools.await_count == 2
 
 
 def test_list_tools_unfiltered_no_double_prefix_when_called_twice():

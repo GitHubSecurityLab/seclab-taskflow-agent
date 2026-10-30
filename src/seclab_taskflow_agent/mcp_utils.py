@@ -109,7 +109,7 @@ class MCPNamespaceWrap:
         return namespaced_tools
 
     async def list_tools_unfiltered(self) -> list[Any]:
-        """List tools directly from the MCP session, namespace-prefixed.
+        """List every page of tools from the MCP session, namespace-prefixed.
 
         Bypasses any tool_filter configured on the wrapped openai-agents
         server (which would require ``run_context`` and ``agent`` arguments
@@ -125,7 +125,7 @@ class MCPNamespaceWrap:
 
         Raises ``RuntimeError`` if the underlying server has no active
         MCP session yet (caller should ensure the server is connected
-        before calling this).
+        before calling this), or if a pagination cursor repeats.
         """
         session = getattr(self._obj, "session", None)
         if session is None:
@@ -135,12 +135,21 @@ class MCPNamespaceWrap:
             )
         result = await session.list_tools()
         namespaced_tools: list[Any] = []
-        for tool in result.tools:
-            tool_copy = tool.copy() if hasattr(tool, "copy") else tool
-            # Idempotent: strip existing prefix before re-applying
-            base_name = tool_copy.name.removeprefix(self.namespace)
-            tool_copy.name = f"{self.namespace}{base_name}"
-            namespaced_tools.append(tool_copy)
+        seen_cursors: set[str] = set()
+        while True:
+            for tool in result.tools:
+                tool_copy = tool.copy() if hasattr(tool, "copy") else tool
+                # Idempotent: strip existing prefix before re-applying
+                base_name = tool_copy.name.removeprefix(self.namespace)
+                tool_copy.name = f"{self.namespace}{base_name}"
+                namespaced_tools.append(tool_copy)
+            cursor = getattr(result, "nextCursor", None)
+            if cursor is None:
+                break
+            if cursor in seen_cursors:
+                raise RuntimeError("MCP server returned a repeated tool-list cursor")
+            seen_cursors.add(cursor)
+            result = await session.list_tools(cursor=cursor)
         return namespaced_tools
 
     def confirm_tool(self, tool_name: str, args: list[Any]) -> bool:

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from copilot import Tool, ToolInvocation, ToolResult
 
 
-def _tool_handler(server: Any, name: str):
+def _tool_handler(server: Any, name: str, *, unwrap_result: bool):
     async def _invoke(invocation: ToolInvocation) -> ToolResult:
         from copilot import ToolBinaryResult, ToolResult
         from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
@@ -54,8 +54,12 @@ def _tool_handler(server: Any, name: str):
                     texts.append(resource.text)
             else:
                 texts.append(content.model_dump_json(exclude_none=True))
-        if not texts and result.structuredContent is not None:
-            texts.append(json.dumps(result.structuredContent))
+        if result.structuredContent is not None:
+            structured: Any = result.structuredContent
+            # FastMCP explicitly marks envelopes for non-object return values.
+            if unwrap_result and list(structured) == ["result"]:
+                structured = structured["result"]
+            texts = [structured if isinstance(structured, str) else json.dumps(structured)]
         return ToolResult(
             result_type="failure" if result.isError else "success",
             text_result_for_llm="".join(texts),
@@ -90,12 +94,16 @@ async def build_mcp_tools(
         for tool in await server.list_tools_unfiltered():
             if tool.name in blocked or tool.name.removeprefix(server.namespace) in blocked:
                 continue
+            output_schema = getattr(tool, "outputSchema", None) or {}
             tools.append(
                 Tool(
                     name=tool.name,
                     description=tool.description or "",
                     parameters=tool.inputSchema,
-                    handler=_tool_handler(server, tool.name),
+                    handler=_tool_handler(
+                        server, tool.name, unwrap_result=output_schema.get("x-fastmcp-wrap-result") is True
+                    ),
+                    defer="never",
                     is_terminal=exclude_from_context,
                 )
             )
