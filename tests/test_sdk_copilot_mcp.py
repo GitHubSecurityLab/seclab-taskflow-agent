@@ -1,118 +1,221 @@
 # SPDX-FileCopyrightText: GitHub, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Tests for ``sdk.copilot_sdk.mcp``."""
+"""Offline tests for policy-enforcing Copilot MCP tools."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 import sys
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+pytest.importorskip("copilot")
+
+from copilot import ToolInvocation
+from mcp.types import CallToolResult, ImageContent, ListToolsResult, TextContent, Tool
+
+from seclab_taskflow_agent.mcp_utils import MCPNamespaceWrap
 from seclab_taskflow_agent.sdk.base import MCPServerSpec
-from seclab_taskflow_agent.sdk.copilot_sdk.mcp import build_mcp_config
+from seclab_taskflow_agent.sdk.copilot_sdk.mcp import build_mcp_tools
+from seclab_taskflow_agent.sdk.errors import BackendCapabilityError
 
 
-def test_stdio_spec_translated_to_subprocess_config():
-    specs = [
-        MCPServerSpec(
-            name="files",
-            kind="stdio",
+def _server(*, confirms=()):
+    transport = SimpleNamespace(
+        name="toolbox",
+        session=SimpleNamespace(
+            list_tools=AsyncMock(
+                return_value=ListToolsResult(
+                    tools=[Tool(name="echo", description="Echo input", inputSchema={"type": "object"})],
+                )
+            )
+        ),
+        call_tool=AsyncMock(
+            return_value=CallToolResult(
+                content=[TextContent(type="text", text="tool-output")],
+            )
+        ),
+    )
+    return MCPNamespaceWrap(list(confirms), transport), transport
+
+
+async def _tools(server, *, blocked=(), exclude=False, kind="stdio"):
+    return await build_mcp_tools(
+        [MCPServerSpec(name="toolbox", kind=kind, params={"_native": server})],
+        blocked_tools=list(blocked),
+        exclude_from_context=exclude,
+    )
+
+
+@pytest.mark.parametrize("kind", ["stdio", "sse", "streamable"])
+def test_registers_and_invokes_existing_mcp_connection(kind):
+    server, transport = _server()
+
+    async def _run():
+        (tool,) = await _tools(server, kind=kind)
+        assert tool.name == server.namespace + "echo"
+        assert tool.description == "Echo input"
+        assert tool.parameters == {"type": "object"}
+        assert not tool.skip_permission
+        assert not tool.is_terminal
+        return await tool.handler(ToolInvocation(tool_name=tool.name, arguments={"value": 42}))
+
+    result = asyncio.run(_run())
+    assert result.result_type == "success"
+    assert result.text_result_for_llm == "tool-output"
+    transport.call_tool.assert_awaited_once_with("echo", {"value": 42})
+
+
+@pytest.mark.parametrize("namespaced", [False, True])
+def test_blocked_tools_are_not_registered(namespaced):
+    server, transport = _server()
+    blocked = server.namespace + "echo" if namespaced else "echo"
+    assert asyncio.run(_tools(server, blocked=[blocked])) == []
+    transport.call_tool.assert_not_awaited()
+
+
+@pytest.mark.parametrize("approved", [False, True])
+def test_toolbox_confirmation_cannot_be_bypassed(approved):
+    server, transport = _server(confirms=["echo"])
+    server.confirm_tool = Mock(return_value=approved)
+
+    async def _run():
+        (tool,) = await _tools(server)
+        return await tool.handler(ToolInvocation(tool_name=tool.name, arguments={"value": 42}))
+
+    result = asyncio.run(_run())
+    server.confirm_tool.assert_called_once_with("echo", [{"value": 42}])
+    if approved:
+        transport.call_tool.assert_awaited_once()
+        assert result.text_result_for_llm == "tool-output"
+    else:
+        transport.call_tool.assert_not_awaited()
+        assert "not allowed" in result.text_result_for_llm
+
+
+def test_headless_wrapper_retains_explicit_confirmation_opt_out():
+    server, transport = _server(confirms=[])
+    server.confirm_tool = Mock(side_effect=AssertionError("unexpected confirmation"))
+
+    async def _run():
+        (tool,) = await _tools(server)
+        await tool.handler(ToolInvocation(tool_name=tool.name))
+
+    asyncio.run(_run())
+    server.confirm_tool.assert_not_called()
+    transport.call_tool.assert_awaited_once()
+
+
+def test_missing_confirmation_fails_closed():
+    server, transport = _server(confirms=["echo"])
+    server.confirm_tool = Mock(side_effect=EOFError)
+
+    async def _run():
+        (tool,) = await _tools(server)
+        return await tool.handler(ToolInvocation(tool_name=tool.name))
+
+    result = asyncio.run(_run())
+    assert result.result_type == "denied"
+    transport.call_tool.assert_not_awaited()
+
+
+def test_invocation_cannot_select_another_tool():
+    server, transport = _server()
+
+    async def _run():
+        (tool,) = await _tools(server)
+        return await tool.handler(ToolInvocation(tool_name="unregistered"))
+
+    assert asyncio.run(_run()).result_type == "denied"
+    transport.call_tool.assert_not_awaited()
+
+
+def test_exclude_from_context_registers_terminal_tools():
+    server, _ = _server()
+    (tool,) = asyncio.run(_tools(server, exclude=True))
+    assert tool.is_terminal
+
+
+def test_mcp_errors_are_reported_as_tool_failures():
+    server, transport = _server()
+    transport.call_tool.return_value = CallToolResult(
+        isError=True,
+        content=[TextContent(type="text", text="invalid key")],
+    )
+
+    async def _run():
+        (tool,) = await _tools(server)
+        return await tool.handler(ToolInvocation(tool_name=tool.name))
+
+    result = asyncio.run(_run())
+    assert result.result_type == "failure"
+    assert result.text_result_for_llm == "invalid key"
+
+
+def test_preserves_structured_results_and_images():
+    server, transport = _server()
+    transport.call_tool.return_value = CallToolResult(
+        content=[ImageContent(type="image", data="aW1hZ2U=", mimeType="image/png")],
+        structuredContent={"value": [1, 2, 3]},
+    )
+
+    async def _run():
+        (tool,) = await _tools(server)
+        return await tool.handler(ToolInvocation(tool_name=tool.name))
+
+    result = asyncio.run(_run())
+    assert json.loads(result.text_result_for_llm) == {"value": [1, 2, 3]}
+    assert result.binary_results_for_llm[0].data == "aW1hZ2U="
+    assert result.binary_results_for_llm[0].mime_type == "image/png"
+
+
+def test_raw_mcp_specs_cannot_bypass_runner_policy():
+    with pytest.raises(BackendCapabilityError, match="connected by the taskflow runner"):
+        asyncio.run(
+            build_mcp_tools(
+                [MCPServerSpec(name="unmanaged", kind="stdio", params={"command": "unused"})],
+                blocked_tools=[],
+                exclude_from_context=False,
+            )
+        )
+
+
+def test_memcache_round_trip_without_copilot_credentials(tmp_path):
+    from agents.mcp import MCPServerStdio
+
+    async def _run():
+        async with MCPServerStdio(
             params={
-                "command": "/usr/bin/mcp",
-                "args": ["--root", "/tmp"],
-                "env": {"FOO": "1"},
-                "cwd": "/work",
-                "timeout": 2.5,
+                "command": sys.executable,
+                "args": ["-m", "seclab_taskflow_agent.mcp_servers.memcache.memcache"],
+                "env": {
+                    "MEMCACHE_STATE_DIR": str(tmp_path),
+                    "MEMCACHE_BACKEND": "dictionary_file",
+                    "LOG_DIR": str(tmp_path),
+                },
             },
-        )
-    ]
-    assert build_mcp_config(specs) == {
-        "files": {
-            "type": "stdio",
-            "command": "/usr/bin/mcp",
-            "args": ["--root", "/tmp"],
-            "env": {"FOO": "1"},
-            "cwd": "/work",
-            "tools": ["*"],
-            "timeout": 2500,
-        }
-    }
+            name="memcache",
+        ) as transport:
+            server = MCPNamespaceWrap([], transport)
+            tools = {t.name.removeprefix(server.namespace): t for t in await _tools(server)}
+            setter = tools["memcache_set_state"]
+            result = await setter.handler(
+                ToolInvocation(
+                    tool_name=setter.name,
+                    arguments={"key": "acc", "value": [1, 2, 3]},
+                )
+            )
+            assert result.result_type == "success"
+            getter = tools["memcache_get_state"]
+            return await getter.handler(ToolInvocation(tool_name=getter.name, arguments={"key": "acc"}))
 
+    async def _bounded():
+        return await asyncio.wait_for(_run(), timeout=60)
 
-def test_sse_spec_translated_to_remote_config():
-    specs = [
-        MCPServerSpec(
-            name="docs",
-            kind="sse",
-            params={
-                "url": "https://example.com/mcp",
-                "headers": {"Authorization": "Bearer x"},
-                "timeout": 10.0,
-            },
-        )
-    ]
-    assert build_mcp_config(specs) == {
-        "docs": {
-            "type": "sse",
-            "url": "https://example.com/mcp",
-            "headers": {"Authorization": "Bearer x"},
-            "tools": ["*"],
-            "timeout": 10000,
-        }
-    }
-
-
-def test_streamable_spec_uses_http_type():
-    specs = [
-        MCPServerSpec(
-            name="gh",
-            kind="streamable",
-            params={"url": "https://api.example.com/mcp"},
-        )
-    ]
-    out = build_mcp_config(specs)
-    assert out["gh"]["type"] == "http"
-    assert out["gh"]["url"] == "https://api.example.com/mcp"
-
-
-def test_streamable_spec_without_url_is_skipped():
-    assert build_mcp_config([MCPServerSpec(name="x", kind="streamable", params={})]) == {}
-
-
-def test_stdio_minimal_defaults():
-    import os
-
-    specs = [MCPServerSpec(name="m", kind="stdio", params={"command": "x"})]
-    assert build_mcp_config(specs) == {
-        "m": {
-            "type": "stdio",
-            "command": "x",
-            "args": [],
-            "tools": ["*"],
-            "cwd": os.getcwd(),
-        }
-    }
-
-
-def test_stdio_resolves_bare_command_via_path(tmp_path, monkeypatch):
-    if sys.platform == "win32":
-        pytest.skip("PATHEXT-based shutil.which lookup is POSIX-specific in this test")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake = bin_dir / "fakecmd"
-    fake.write_text("#!/bin/sh\n")
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", str(bin_dir))
-    specs = [MCPServerSpec(name="m", kind="stdio", params={"command": "fakecmd"})]
-    out = build_mcp_config(specs)
-    assert out["m"]["command"] == str(fake)
-
-
-def test_stdio_explicit_cwd_preserved():
-    specs = [
-        MCPServerSpec(
-            name="m", kind="stdio", params={"command": "/usr/bin/x", "cwd": "/tmp"}
-        )
-    ]
-    assert build_mcp_config(specs)["m"]["cwd"] == "/tmp"
+    result = asyncio.run(_bounded())
+    assert result.result_type == "success"
+    assert json.loads(result.text_result_for_llm) == [1, 2, 3]
