@@ -117,17 +117,24 @@ class MCPNamespaceWrap:
         run loop -- e.g. when handing tools to a different SDK at build
         time).
 
+        Reconnecting transports hold one connection open for all pages.
+
         Prefixing is idempotent: if a tool's name already starts with this
         wrapper's namespace (e.g. because the underlying session returned a
         previously-namespaced object), the existing prefix is stripped
         before re-applying so calling this method multiple times never
         yields ``<ns><ns>name``.
 
-        Raises ``RuntimeError`` if the underlying server has no active
+        Raises ``RuntimeError`` if a persistent server has no active
         MCP session yet (caller should ensure the server is connected
         before calling this), or if a pagination cursor repeats.
         """
-        session = getattr(self._obj, "session", None)
+        if isinstance(self._obj, ReconnectingMCPServerStdio):
+            async with self._obj.tool_session() as session:
+                return await self._list_session_tools(session)
+        return await self._list_session_tools(getattr(self._obj, "session", None))
+
+    async def _list_session_tools(self, session: Any) -> list[Any]:
         if session is None:
             raise RuntimeError(
                 f"MCPNamespaceWrap({self._obj!r}): underlying server has no "
@@ -180,7 +187,8 @@ class MCPNamespaceWrap:
         if self.confirms and tool_name in self.confirms:
             if not self.confirm_tool(tool_name, _args[1:]):
                 result = CallToolResult(
-                    content=[TextContent(type="text", text="Tool call not allowed.", annotations=None, meta=None)]
+                    content=[TextContent(type="text", text="Tool call not allowed.", annotations=None, meta=None)],
+                    isError=True,
                 )
                 return result
         _args[0] = tool_name

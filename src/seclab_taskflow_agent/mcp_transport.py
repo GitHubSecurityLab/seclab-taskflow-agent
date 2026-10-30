@@ -28,7 +28,8 @@ import signal
 import socket
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from threading import Event, Thread
 from typing import IO, Any
 from urllib.parse import urlparse
@@ -291,23 +292,23 @@ class ReconnectingMCPServerStdio(MCPServerStdio):
         """No-op — cleanup happens per-call."""
         logging.debug("Ignoring mcp cleanup request on purpose")
 
-    async def list_tools(self, *args: Any, **kwargs: Any) -> Any:
-        """Connect, list tools, then disconnect."""
+    @asynccontextmanager
+    async def tool_session(self) -> AsyncIterator[Any]:
+        """Hold one serialized connection for an entire tool operation."""
         async with self.reconnecting_lock:
-            await super().connect()
             try:
-                result = await super().list_tools(*args, **kwargs)
+                await super().connect()
+                yield self.session
             finally:
                 await super().cleanup()
-            return result
+
+    async def list_tools(self, *args: Any, **kwargs: Any) -> Any:
+        """Connect, list tools, then disconnect."""
+        async with self.tool_session():
+            return await super().list_tools(*args, **kwargs)
 
     async def call_tool(self, *args: Any, **kwargs: Any) -> Any:
         """Connect, call tool, then disconnect."""
         logging.debug("Using reconnecting call_tool for stdio mcp")
-        async with self.reconnecting_lock:
-            await super().connect()
-            try:
-                result = await super().call_tool(*args, **kwargs)
-            finally:
-                await super().cleanup()
-            return result
+        async with self.tool_session():
+            return await super().call_tool(*args, **kwargs)

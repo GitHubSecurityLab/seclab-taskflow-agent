@@ -11,7 +11,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
+from agents.mcp import MCPServerStdio
 
+from seclab_taskflow_agent.mcp_transport import ReconnectingMCPServerStdio
 from seclab_taskflow_agent.mcp_utils import (
     MCPNamespaceWrap,
     _env_names,
@@ -131,6 +133,56 @@ def test_list_tools_unfiltered_raises_when_session_missing():
         asyncio.run(wrapper.list_tools_unfiltered())
 
 
+@pytest.mark.parametrize("outcome", ["success", "listing-error", "cancelled", "connect-error"])
+def test_unfiltered_reconnecting_listing_owns_its_session(monkeypatch, outcome):
+    session = SimpleNamespace(
+        list_tools=AsyncMock(
+            side_effect=[
+                SimpleNamespace(tools=[_FakeTool("first")], nextCursor="next"),
+                SimpleNamespace(tools=[_FakeTool("last")], nextCursor=None),
+            ]
+        )
+    )
+    if outcome in ("listing-error", "cancelled"):
+        error = asyncio.CancelledError() if outcome == "cancelled" else RuntimeError("listing failed")
+        session.list_tools.side_effect = [
+            SimpleNamespace(tools=[_FakeTool("first")], nextCursor="next"),
+            error,
+        ]
+    events = []
+
+    async def connect(server):
+        events.append("connect")
+        if outcome == "connect-error":
+            raise RuntimeError("connection failed")
+        server.session = session
+
+    async def cleanup(server):
+        events.append("cleanup")
+        server.session = None
+
+    monkeypatch.setattr(MCPServerStdio, "connect", connect)
+    monkeypatch.setattr(MCPServerStdio, "cleanup", cleanup)
+    transport = ReconnectingMCPServerStdio(params={"command": "unused"}, name="Repo")
+    transport.list_tools = AsyncMock(side_effect=AssertionError("filtered listing must not be used"))
+    wrapper = MCPNamespaceWrap([], transport)
+
+    if outcome == "success":
+        tools = asyncio.run(wrapper.list_tools_unfiltered())
+        assert [tool.name for tool in tools] == [wrapper.namespace + "first", wrapper.namespace + "last"]
+    else:
+        exception = asyncio.CancelledError if outcome == "cancelled" else RuntimeError
+        with pytest.raises(exception):
+            asyncio.run(wrapper.list_tools_unfiltered())
+
+    assert events == ["connect", "cleanup"]
+    assert transport.session is None
+    assert not transport.reconnecting_lock.locked()
+    transport.list_tools.assert_not_awaited()
+    expected_calls = [] if outcome == "connect-error" else [call(), call(cursor="next")]
+    assert session.list_tools.await_args_list == expected_calls
+
+
 def test_list_tools_unfiltered_does_not_share_state_with_caller():
     """Mutating returned tool names must not affect the underlying tools."""
     original = _FakeTool("read_file")
@@ -209,6 +261,18 @@ def test_list_tools_existing_behaviour_unchanged():
     obj.list_tools.assert_awaited_once_with(run_context="ctx", agent="agent")
     ns = compress_name("RepoContext")
     assert result[0].name == f"{ns}read_file"
+
+
+def test_call_tool_reports_confirmation_refusal_as_an_error(monkeypatch):
+    transport = SimpleNamespace(name="Repo", call_tool=AsyncMock())
+    wrapper = MCPNamespaceWrap(["write_file"], transport)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "no")
+
+    result = asyncio.run(wrapper.call_tool(wrapper.namespace + "write_file", {"path": "example.txt"}))
+
+    assert result.isError is True
+    assert result.content[0].text == "Tool call not allowed."
+    transport.call_tool.assert_not_awaited()
 
 
 # -- secret redaction in debug logs --

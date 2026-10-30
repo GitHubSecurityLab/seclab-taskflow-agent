@@ -18,6 +18,7 @@ pytest.importorskip("copilot")
 from copilot import ToolInvocation
 from mcp.types import CallToolResult, ImageContent, ListToolsResult, TextContent, Tool
 
+from seclab_taskflow_agent.mcp_transport import ReconnectingMCPServerStdio
 from seclab_taskflow_agent.mcp_utils import MCPNamespaceWrap
 from seclab_taskflow_agent.sdk.base import MCPServerSpec
 from seclab_taskflow_agent.sdk.copilot_sdk.mcp import build_mcp_tools
@@ -104,15 +105,17 @@ def test_paginated_tools_are_filtered_and_invoked_through_the_wrapper(namespaced
 
 
 @pytest.mark.parametrize("approved", [False, True])
-def test_toolbox_confirmation_cannot_be_bypassed(approved):
+@pytest.mark.parametrize("exclude", [False, True])
+def test_toolbox_confirmation_cannot_be_bypassed(approved, exclude):
     server, transport = _server(confirms=["echo"])
     server.confirm_tool = Mock(return_value=approved)
 
     async def _run():
-        (tool,) = await _tools(server)
+        (tool,) = await _tools(server, exclude=exclude)
         return await tool.handler(ToolInvocation(tool_name=tool.name, arguments={"value": 42}))
 
     result = asyncio.run(_run())
+    assert result.result_type == ("success" if approved else "failure")
     server.confirm_tool.assert_called_once_with("echo", [{"value": 42}])
     if approved:
         transport.call_tool.assert_awaited_once()
@@ -254,11 +257,14 @@ def test_raw_mcp_specs_cannot_bypass_runner_policy():
         )
 
 
-def test_memcache_round_trip_without_copilot_credentials(tmp_path):
+@pytest.mark.parametrize("reconnecting", [False, True])
+def test_memcache_round_trip_without_copilot_credentials(tmp_path, reconnecting):
     from agents.mcp import MCPServerStdio
 
+    server_class = ReconnectingMCPServerStdio if reconnecting else MCPServerStdio
+
     async def _run():
-        async with MCPServerStdio(
+        async with server_class(
             params={
                 "command": sys.executable,
                 "args": ["-m", "seclab_taskflow_agent.mcp_servers.memcache.memcache"],
