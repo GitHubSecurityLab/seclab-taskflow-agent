@@ -138,9 +138,10 @@ def test_headless_wrapper_retains_explicit_confirmation_opt_out():
     transport.call_tool.assert_awaited_once()
 
 
-def test_missing_confirmation_fails_closed():
+@pytest.mark.parametrize("error_type", [EOFError, OSError])
+def test_missing_confirmation_fails_closed(monkeypatch, error_type):
     server, transport = _server(confirms=["echo"])
-    server.confirm_tool = Mock(side_effect=EOFError)
+    monkeypatch.setattr("builtins.input", Mock(side_effect=error_type))
 
     async def _run():
         (tool,) = await _tools(server)
@@ -149,6 +150,29 @@ def test_missing_confirmation_fails_closed():
     result = asyncio.run(_run())
     assert result.result_type == "denied"
     transport.call_tool.assert_not_awaited()
+
+
+@pytest.mark.parametrize("error_type", [EOFError, OSError])
+@pytest.mark.parametrize("requires_confirmation", [False, True])
+def test_transport_errors_are_not_reported_as_confirmation_denials(error_type, requires_confirmation):
+    server, transport = _server(confirms=["echo"] if requires_confirmation else [])
+    server.confirm_tool = Mock(return_value=True)
+    error = error_type("MCP connection lost")
+    transport.call_tool.side_effect = error
+
+    async def _run():
+        (tool,) = await _tools(server)
+        return await tool.handler(ToolInvocation(tool_name=tool.name, arguments={"value": 42}))
+
+    with pytest.raises(error_type, match="MCP connection lost") as raised:
+        asyncio.run(_run())
+
+    assert raised.value is error
+    transport.call_tool.assert_awaited_once_with("echo", {"value": 42})
+    if requires_confirmation:
+        server.confirm_tool.assert_called_once_with("echo", [{"value": 42}])
+    else:
+        server.confirm_tool.assert_not_called()
 
 
 def test_invocation_cannot_select_another_tool():

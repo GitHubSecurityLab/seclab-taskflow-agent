@@ -12,6 +12,7 @@ from __future__ import annotations
 __all__ = [
     "COMPRESSED_NAME_LENGTH",
     "DEFAULT_MCP_CLIENT_SESSION_TIMEOUT",
+    "MCPConfirmationUnavailableError",
     "MCPNamespaceWrap",
     "compress_name",
     "mcp_client_params",
@@ -68,6 +69,10 @@ def compress_name(name: str) -> str:
     m = hashlib.sha256()
     m.update(name.encode("utf-8"))
     return COMPRESSED_NAME_PREFIX + m.hexdigest()[:COMPRESSED_NAME_LENGTH]
+
+
+class MCPConfirmationUnavailableError(RuntimeError):
+    """A required tool confirmation could not be obtained."""
 
 
 class MCPNamespaceWrap:
@@ -185,7 +190,11 @@ class MCPNamespaceWrap:
         tool_name = tool_name.removeprefix(self.namespace)
         # to run headless, just make confirms an empty list
         if self.confirms and tool_name in self.confirms:
-            if not self.confirm_tool(tool_name, _args[1:]):
+            try:
+                approved = self.confirm_tool(tool_name, _args[1:])
+            except (EOFError, OSError) as exc:
+                raise MCPConfirmationUnavailableError("Required toolbox confirmation is unavailable") from exc
+            if not approved:
                 result = CallToolResult(
                     content=[TextContent(type="text", text="Tool call not allowed.", annotations=None, meta=None)],
                     isError=True,

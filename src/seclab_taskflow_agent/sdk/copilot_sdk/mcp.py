@@ -22,14 +22,16 @@ def _tool_handler(server: Any, name: str, *, unwrap_result: bool):
         from copilot import ToolBinaryResult, ToolResult
         from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
 
+        from ...mcp_utils import MCPConfirmationUnavailableError
+
         if invocation.tool_name != name:
             return ToolResult(result_type="denied", text_result_for_llm="Unknown taskflow tool")
         try:
             result = await server.call_tool(name, invocation.arguments or {})
-        except (EOFError, OSError):
+        except MCPConfirmationUnavailableError as exc:
             return ToolResult(
                 result_type="denied",
-                text_result_for_llm="Required toolbox confirmation is unavailable",
+                text_result_for_llm=str(exc),
             )
 
         texts: list[str] = []
