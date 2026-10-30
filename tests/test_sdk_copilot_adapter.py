@@ -208,6 +208,31 @@ def test_run_streamed_drains_stale_queue_before_send():
     assert out == [TextDelta(text="new")]
 
 
+def test_run_streamed_discards_stale_foreign_response_before_model_checks():
+    stale = [
+        _ev(
+            SessionEventType.ASSISTANT_MESSAGE,
+            content="old response",
+            message_id="old",
+            originating_message_id="other-request",
+            model="gpt-4.1",
+        ),
+        _ev(SessionEventType.ASSISTANT_USAGE, model="gpt-4.1", input_tokens=99, output_tokens=99),
+    ]
+    handle, out = _stream(
+        [
+            _started(),
+            _delta("new"),
+            _ev(SessionEventType.ASSISTANT_USAGE, model=MODEL, input_tokens=1, output_tokens=2),
+            _idle(),
+        ],
+        stale=stale,
+    )
+    assert handle.session.sent == ["go"]
+    assert handle.session.aborted == 0
+    assert out == [TextDelta(text="new"), TokenUsage(model=MODEL, input_tokens=1, output_tokens=2)]
+
+
 def test_run_streamed_falls_back_to_full_assistant_message():
     _, out = _stream(
         [
@@ -495,8 +520,16 @@ def test_run_streamed_auto_model_accepts_routed_model(caplog):
     assert "'auto' routed to 'gpt-6-luna'" in caplog.text
 
 
-def test_run_streamed_rejects_model_switch_in_stale_events():
-    handle = _handle([], stale=[_ev(SessionEventType.SESSION_START, selected_model="gpt-4.1")])
+@pytest.mark.parametrize(
+    "event",
+    [
+        _ev(SessionEventType.SESSION_START, selected_model="gpt-4.1"),
+        _ev(SessionEventType.SESSION_MODEL_CHANGE, new_model="gpt-4.1", previous_model=MODEL),
+    ],
+    ids=lambda e: e.type.value,
+)
+def test_run_streamed_rejects_model_switch_in_stale_events(event):
+    handle = _handle([], stale=[event])
     with pytest.raises(BackendUnexpectedError, match=r"gpt-4\.1"):
         asyncio.run(_collect(handle))
     assert handle.session.sent == []

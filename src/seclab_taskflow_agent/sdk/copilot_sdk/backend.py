@@ -358,13 +358,16 @@ class CopilotSDKBackend:
         tool_names: dict[str, str] = {}
         streamed_message_ids: set[str] = set()
         try:
-            # Discard an earlier turn's events, retaining model-pin checks.
+            # Only session-level events describe the model for the next request.
             while True:
                 try:
                     stale = agent.event_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                if not getattr(stale, "agent_id", None):
+                if getattr(stale, "type", None) in (
+                    SessionEventType.SESSION_START,
+                    SessionEventType.SESSION_MODEL_CHANGE,
+                ) and not getattr(stale, "agent_id", None):
                     _enforce_model(stale)
 
             try:
