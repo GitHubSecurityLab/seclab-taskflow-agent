@@ -41,7 +41,7 @@ dependencies = [
   "anthropic>=0.50,<1",
   "anyio==4.14.2",
   "attrs==25.3.0",
-  "Authlib==1.6.12",
+  "Authlib==1.9.1",
   "certifi==2025.6.15",
   "cffi==2.0.0",
   "charset-normalizer==3.4.2",
