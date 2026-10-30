@@ -9,50 +9,98 @@ import pytest
 
 pytest.importorskip("copilot")
 
-from dataclasses import dataclass
+from copilot.rpc import PermissionDecisionApproveOnce, PermissionDecisionReject
+from copilot.session_events import (
+    PermissionRequestCustomTool,
+    PermissionRequestHook,
+    PermissionRequestMcp,
+    PermissionRequestMemory,
+    PermissionRequestRead,
+    PermissionRequestShell,
+    PermissionRequestUrl,
+    PermissionRequestWrite,
+)
 
 from seclab_taskflow_agent.sdk.copilot_sdk.permissions import build_permission_handler
 
 
-@dataclass
-class _Req:
-    tool_name: str | None = None
-    full_command_text: str | None = None
-    path: str | None = None
-    url: str | None = None
+def _mcp(tool_name: str = "safe", **kw) -> PermissionRequestMcp:
+    return PermissionRequestMcp(
+        read_only=False,
+        server_name="toolbox",
+        tool_name=tool_name,
+        tool_title=tool_name,
+        **kw,
+    )
 
 
-def test_blocked_tool_is_denied_by_rules():
-    handler = build_permission_handler(["dangerous"], headless=True)
-    result = handler(_Req(tool_name="dangerous"), {})
-    assert result.kind == "denied-by-rules"
-    assert "dangerous" in (result.message or "")
+def _shell(command: str = "ls") -> PermissionRequestShell:
+    return PermissionRequestShell(
+        can_offer_session_approval=False,
+        commands=[],
+        full_command_text=command,
+        has_write_file_redirection=False,
+        intention="run",
+        possible_paths=[],
+        possible_urls=[],
+    )
 
 
-def test_headless_approves_unblocked_tool():
-    handler = build_permission_handler(["other"], headless=True)
-    result = handler(_Req(tool_name="safe"), {})
-    assert result.kind == "approved"
+def _write(path: str = "/tmp/x") -> PermissionRequestWrite:
+    return PermissionRequestWrite(can_offer_session_approval=False, diff="+x", file_name=path, intention="edit")
 
 
-def test_non_headless_still_approves_unblocked_tool():
-    # The Copilot SDK requires a permission verdict; the runner has no
-    # interactive TTY, so any non-blocked tool is approved regardless of
-    # the YAML ``headless`` flag (the openai-agents path has the same
-    # effective behaviour).
-    handler = build_permission_handler([], headless=False)
-    result = handler(_Req(tool_name="safe"), {})
-    assert result.kind == "approved"
+@pytest.mark.parametrize(
+    "request_",
+    [
+        _mcp(),
+        PermissionRequestRead(intention="read", path="/etc/hostname"),
+        PermissionRequestUrl(intention="fetch", url="https://example.com"),
+        _shell(),
+        _write(),
+        PermissionRequestMemory(fact="remember me"),
+        PermissionRequestHook(tool_name="h"),
+    ],
+    ids=lambda r: r.kind,
+)
+def test_raw_mcp_and_builtin_permissions_are_denied(request_):
+    result = build_permission_handler(["safe"])(request_, {"session_id": "s"})
+    assert isinstance(result, PermissionDecisionReject)
 
 
-def test_block_matches_command_text_when_tool_name_missing():
-    handler = build_permission_handler(["rm -rf /"], headless=True)
-    result = handler(_Req(full_command_text="rm -rf /"), {})
-    assert result.kind == "denied-by-rules"
+def test_only_registered_policy_enforcing_tools_are_approved():
+    handler = build_permission_handler(["safe"])
+    result = handler(
+        PermissionRequestCustomTool(tool_description="d", tool_name="safe"),
+        {"session_id": "s", "managed_settings_enabled": False},
+    )
+    assert isinstance(result, PermissionDecisionApproveOnce)
+    assert result.to_dict() == {"kind": "approve-once"}
 
 
-def test_handler_signature_matches_sdk_callback() -> None:
-    # Sanity check: the SDK calls handler(request, invocation); make sure
-    # we accept exactly two positional arguments.
-    handler = build_permission_handler([], headless=True)
-    handler(_Req(tool_name="ok"), {"invocation": "x"})  # type: ignore[arg-type]
+def test_unknown_kind_is_denied():
+    class _Future:
+        kind = "something-new"
+
+    result = build_permission_handler([])(_Future(), {"session_id": "s"})
+    assert isinstance(result, PermissionDecisionReject)
+
+
+def test_unregistered_custom_tool_is_rejected():
+    result = build_permission_handler(["safe"])(
+        PermissionRequestCustomTool(tool_description="d", tool_name="dangerous"),
+        {"session_id": "s"},
+    )
+    assert isinstance(result, PermissionDecisionReject)
+
+
+def test_managed_approval_required_is_rejected():
+    result = build_permission_handler(["safe"])(
+        PermissionRequestCustomTool(
+            tool_description="d",
+            tool_name="safe",
+            managed_approval_required=True,
+        ),
+        {"session_id": "s"},
+    )
+    assert isinstance(result, PermissionDecisionReject)

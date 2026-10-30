@@ -12,6 +12,7 @@ from __future__ import annotations
 __all__ = [
     "COMPRESSED_NAME_LENGTH",
     "DEFAULT_MCP_CLIENT_SESSION_TIMEOUT",
+    "MCPConfirmationUnavailableError",
     "MCPNamespaceWrap",
     "compress_name",
     "mcp_client_params",
@@ -70,6 +71,10 @@ def compress_name(name: str) -> str:
     return COMPRESSED_NAME_PREFIX + m.hexdigest()[:COMPRESSED_NAME_LENGTH]
 
 
+class MCPConfirmationUnavailableError(RuntimeError):
+    """A required tool confirmation could not be obtained."""
+
+
 class MCPNamespaceWrap:
     """MCP client wrapper that prefixes tool names with a namespace hash.
 
@@ -109,7 +114,7 @@ class MCPNamespaceWrap:
         return namespaced_tools
 
     async def list_tools_unfiltered(self) -> list[Any]:
-        """List tools directly from the MCP session, namespace-prefixed.
+        """List every page of tools from the MCP session, namespace-prefixed.
 
         Bypasses any tool_filter configured on the wrapped openai-agents
         server (which would require ``run_context`` and ``agent`` arguments
@@ -117,17 +122,24 @@ class MCPNamespaceWrap:
         run loop -- e.g. when handing tools to a different SDK at build
         time).
 
+        Reconnecting transports hold one connection open for all pages.
+
         Prefixing is idempotent: if a tool's name already starts with this
         wrapper's namespace (e.g. because the underlying session returned a
         previously-namespaced object), the existing prefix is stripped
         before re-applying so calling this method multiple times never
         yields ``<ns><ns>name``.
 
-        Raises ``RuntimeError`` if the underlying server has no active
+        Raises ``RuntimeError`` if a persistent server has no active
         MCP session yet (caller should ensure the server is connected
-        before calling this).
+        before calling this), or if a pagination cursor repeats.
         """
-        session = getattr(self._obj, "session", None)
+        if isinstance(self._obj, ReconnectingMCPServerStdio):
+            async with self._obj.tool_session() as session:
+                return await self._list_session_tools(session)
+        return await self._list_session_tools(getattr(self._obj, "session", None))
+
+    async def _list_session_tools(self, session: Any) -> list[Any]:
         if session is None:
             raise RuntimeError(
                 f"MCPNamespaceWrap({self._obj!r}): underlying server has no "
@@ -135,12 +147,21 @@ class MCPNamespaceWrap:
             )
         result = await session.list_tools()
         namespaced_tools: list[Any] = []
-        for tool in result.tools:
-            tool_copy = tool.copy() if hasattr(tool, "copy") else tool
-            # Idempotent: strip existing prefix before re-applying
-            base_name = tool_copy.name.removeprefix(self.namespace)
-            tool_copy.name = f"{self.namespace}{base_name}"
-            namespaced_tools.append(tool_copy)
+        seen_cursors: set[str] = set()
+        while True:
+            for tool in result.tools:
+                tool_copy = tool.copy() if hasattr(tool, "copy") else tool
+                # Idempotent: strip existing prefix before re-applying
+                base_name = tool_copy.name.removeprefix(self.namespace)
+                tool_copy.name = f"{self.namespace}{base_name}"
+                namespaced_tools.append(tool_copy)
+            cursor = getattr(result, "nextCursor", None)
+            if cursor is None:
+                break
+            if cursor in seen_cursors:
+                raise RuntimeError("MCP server returned a repeated tool-list cursor")
+            seen_cursors.add(cursor)
+            result = await session.list_tools(cursor=cursor)
         return namespaced_tools
 
     def confirm_tool(self, tool_name: str, args: list[Any]) -> bool:
@@ -169,9 +190,14 @@ class MCPNamespaceWrap:
         tool_name = tool_name.removeprefix(self.namespace)
         # to run headless, just make confirms an empty list
         if self.confirms and tool_name in self.confirms:
-            if not self.confirm_tool(tool_name, _args[1:]):
+            try:
+                approved = self.confirm_tool(tool_name, _args[1:])
+            except (EOFError, OSError) as exc:
+                raise MCPConfirmationUnavailableError("Required toolbox confirmation is unavailable") from exc
+            if not approved:
                 result = CallToolResult(
-                    content=[TextContent(type="text", text="Tool call not allowed.", annotations=None, meta=None)]
+                    content=[TextContent(type="text", text="Tool call not allowed.", annotations=None, meta=None)],
+                    isError=True,
                 )
                 return result
         _args[0] = tool_name

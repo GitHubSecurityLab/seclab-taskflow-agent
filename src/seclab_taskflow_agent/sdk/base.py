@@ -71,10 +71,9 @@ StreamEvent = Union[TextDelta, ToolEnd, TokenUsage]
 class MCPServerSpec:
     """Backend-neutral MCP server descriptor.
 
-    The openai-agents adapter only needs the built native server
-    handle that the runner stores under ``params["_native"]``. The
-    Copilot SDK adapter consumes ``kind`` plus the transport keys
-    (``command``/``args``/``env``/``url``/``headers``).
+    The runner stores the connected, policy-enforcing server wrapper under
+    ``params["_native"]``. Adapters invoke tools through that wrapper so
+    transport lifecycle and toolbox confirmations remain runner-owned.
     """
 
     name: str
