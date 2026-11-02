@@ -791,6 +791,14 @@ SecLab Taskflow Agent is an experimental agentic framework, maintained by [GitHu
 
 We'd love to hear your feedback. Please [create an issue](https://github.com/GitHubSecurityLab/seclab-taskflow-agent/issues/new/choose) to send us a feature request or bug report. We also welcome pull requests (see our [contribution guidelines](./CONTRIBUTING.md) for more information if you wish to contribute).
 
+## Blog posts
+
+Explore how we’ve used the GitHub Security Lab Taskflow Agent to find vulnerabilities, fuzz applications, and triage findings:
+
+* 2026-09-28: [How we found 24 Android vulnerabilities using our open source AI security agent](https://github.blog/security/how-we-found-24-android-vulnerabilities-using-our-open-source-ai-security-agent/)
+* 2026-09-24: [AI-powered fuzzing with the GitHub Security Lab Taskflow Agent](https://github.blog/security/application-security/ai-powered-fuzzing-with-the-github-security-lab-taskflow-agent/)
+* 2026-03-06: [How to scan for vulnerabilities with GitHub Security Lab’s open source AI-powered framework](https://github.blog/security/how-to-scan-for-vulnerabilities-with-github-security-labs-open-source-ai-powered-framework/)
+* 2026-01-20: [AI-supported vulnerability triage with the GitHub Security Lab Taskflow Agent](https://github.blog/security/ai-supported-vulnerability-triage-with-the-github-security-lab-taskflow-agent/)
 
 ## License
 
