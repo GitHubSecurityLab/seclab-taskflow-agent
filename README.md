@@ -89,9 +89,19 @@ The runner can drive three SDKs behind a common interface:
   multi-personality handoffs, both `chat_completions` and `responses`
   `api_type`, `temperature`, `parallel_tool_calls`,
   `exclude_from_context`, and MCP over stdio, SSE, and streamable HTTP.
-- **`copilot_sdk`** — the GitHub Copilot Python SDK. Supports streaming,
+- **`copilot_sdk`** — the GitHub Copilot Python SDK (1.x). Supports streaming,
   `reasoning_effort`, MCP over stdio/SSE/HTTP, and per-tool permission
-  gating. The SDK selects its own wire protocol per model, so the YAML
+  gating. Authentication uses the env var named by `token` in
+  `model_settings` (default `COPILOT_GITHUB_TOKEN`); a named but empty
+  variable is an error. Without a token override, the SDK's default
+  authentication chain applies. The requested model must be available to
+  the account; runtime switches are rejected unless `auto` was explicitly
+  selected. Only taskflow-configured MCP tools are exposed, through the
+  existing SecLab wrappers: `blocked_tools`, toolbox confirmations, and
+  the explicit `headless` opt-in retain their usual behavior. Other SDK
+  tools and permission kinds are denied. `exclude_from_context` uses
+  terminal tools so successful tool results are not sent back to the model.
+  The SDK selects its own wire protocol per model, so the YAML
   `api_type` field is not honoured; multi-personality handoffs,
   `temperature`, and `parallel_tool_calls` are likewise not available.
   Taskflows that use unsupported fields fail at load time with a
@@ -261,7 +271,8 @@ The two models are defined in [multi_model.yaml](examples/model_configs/multi_mo
 
 ## Requirements
 
-Python >= 3.10 or Docker
+Python >= 3.11 or Docker. Copilot SDK 1.x requires Python 3.11+, so this
+upgrade explicitly ends Python 3.10 support for the package.
 
 ## Configuration
 

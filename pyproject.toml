@@ -7,7 +7,7 @@ name = "seclab-taskflow-agent"
 dynamic = ["version"]
 description = "A taskflow agent for the SecLab project, enabling secure and automated workflow execution."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 keywords = [
   "agentic-workflows",
@@ -24,7 +24,6 @@ authors = [
 classifiers = [
   "Development Status :: 4 - Beta",
   "Programming Language :: Python",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -56,7 +55,7 @@ dependencies = [
   "email-validator==2.3.0",
   "exceptiongroup==1.3.0",
   "fastmcp==3.2.0",
-  "github-copilot-sdk>=0.2.2,<0.3",
+  "github-copilot-sdk==1.0.28",
   "griffelib==2.1.0",
   "h11==0.16.0",
   "httpcore==1.0.9",

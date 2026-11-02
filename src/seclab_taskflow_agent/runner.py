@@ -723,9 +723,7 @@ async def deploy_task_agents(
     mcp_params = mcp_client_params(available_tools, toolboxes)
     server_prompts = [sp for _, (_, _, sp, _) in mcp_params.items()]
 
-    # Wrap each built MCP server in a neutral spec. The openai
-    # adapter unwraps ``params["_native"]``; the Copilot adapter reads
-    # ``kind`` plus the raw transport keys.
+    # Share the connected, policy-enforcing wrapper with each adapter.
     mcp_specs: list[MCPServerSpec] = []
     for entry in entries:
         raw_params, *_ = mcp_params.get(entry.server.name, ({}, [], "", 0.0))

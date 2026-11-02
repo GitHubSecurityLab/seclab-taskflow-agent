@@ -1,53 +1,38 @@
 # SPDX-FileCopyrightText: GitHub, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Permission handling for the Copilot SDK backend.
+"""Allow only registered, policy-enforcing taskflow tool handlers.
 
-The Copilot SDK requires every session to provide an
-``on_permission_request`` callback. The taskflow YAML exposes a single
-policy knob, ``blocked_tools``: any tool whose name or raw
-command/path/url appears in that list is denied (exact string match);
-everything else is approved. The ``headless`` flag is accepted for
-signature parity with the openai-agents path but is unused — the
-runner never has a TTY, so there is no interactive fallback to prompt
-for.
+An SDK approval permits dispatch to the wrapper, not execution without its
+confirmation checks. Raw MCP requests, built-in tools, unknown tools and
+managed-approval requests are denied, including reads and URL fetches.
 """
 
 from __future__ import annotations
 
 __all__ = ["build_permission_handler"]
 
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Collection
+from typing import TYPE_CHECKING
 
-
-def _request_field(request: Any, *names: str) -> str | None:
-    for name in names:
-        value = getattr(request, name, None)
-        if value:
-            return str(value)
-    return None
+if TYPE_CHECKING:
+    from copilot import PermissionRequest, PermissionRequestResult
+    from copilot.session import PermissionInvocation
 
 
 def build_permission_handler(
-    blocked_tools: list[str],
-    *,
-    headless: bool,
-) -> Callable[[Any, dict[str, str]], Any]:
-    # Imported lazily so test code that does not exercise the handler
-    # can import this module without the SDK installed.
-    from copilot.session import PermissionRequestResult
+    allowed_tools: Collection[str],
+) -> Callable[[PermissionRequest, PermissionInvocation], PermissionRequestResult]:
+    from copilot.rpc import PermissionDecisionApproveOnce, PermissionDecisionReject
+    from copilot.session_events import PermissionRequestCustomTool
 
-    del headless  # see module docstring
-    blocked = set(blocked_tools)
+    allowed = frozenset(allowed_tools)
 
-    def _handler(request: Any, _invocation: dict[str, str]) -> Any:
-        tool_id = _request_field(request, "tool_name", "full_command_text", "path", "url")
-        if tool_id and tool_id in blocked:
-            return PermissionRequestResult(
-                kind="denied-by-rules",
-                message=f"Tool {tool_id!r} is blocked by taskflow configuration",
-            )
-        return PermissionRequestResult(kind="approved")
+    def _handler(request: PermissionRequest, _invocation: PermissionInvocation) -> PermissionRequestResult:
+        if getattr(request, "managed_approval_required", False):
+            return PermissionDecisionReject(feedback="Managed approval is required and cannot be granted by a taskflow")
+        if isinstance(request, PermissionRequestCustomTool) and request.tool_name in allowed:
+            return PermissionDecisionApproveOnce()
+        return PermissionDecisionReject(feedback="Only configured taskflow tools may be invoked")
 
     return _handler

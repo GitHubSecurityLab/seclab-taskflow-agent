@@ -1,85 +1,112 @@
 # SPDX-FileCopyrightText: GitHub, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Translate neutral :class:`MCPServerSpec` values into Copilot SDK MCP configs."""
+"""Expose runner-owned MCP tools through the public Copilot SDK tool API."""
 
 from __future__ import annotations
 
-__all__ = ["build_mcp_config"]
+__all__ = ["build_mcp_tools"]
 
-import os
-import shutil
-from typing import Any
+import json
+from typing import TYPE_CHECKING, Any
 
 from ..base import MCPServerSpec
+from ..errors import BackendCapabilityError
+
+if TYPE_CHECKING:
+    from copilot import Tool, ToolInvocation, ToolResult
 
 
-def _resolve_command(command: str) -> str:
-    """Return an absolute path for *command*.
+def _tool_handler(server: Any, name: str, *, unwrap_result: bool):
+    async def _invoke(invocation: ToolInvocation) -> ToolResult:
+        from copilot import ToolBinaryResult, ToolResult
+        from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
 
-    The Copilot SDK spawns MCP servers in a fresh subprocess that does not
-    inherit our active virtualenv, so a bare ``python`` resolves to the
-    system interpreter and the toolbox import fails. Resolving against the
-    runner's ``PATH`` (which has the venv prepended) gives the SDK an
-    absolute path that points at the correct interpreter.
+        from ...mcp_utils import MCPConfirmationUnavailableError
+
+        if invocation.tool_name != name:
+            return ToolResult(result_type="denied", text_result_for_llm="Unknown taskflow tool")
+        try:
+            result = await server.call_tool(name, invocation.arguments or {})
+        except MCPConfirmationUnavailableError as exc:
+            return ToolResult(
+                result_type="denied",
+                text_result_for_llm=str(exc),
+            )
+
+        texts: list[str] = []
+        binaries: list[ToolBinaryResult] = []
+        for content in result.content:
+            if isinstance(content, TextContent):
+                texts.append(content.text)
+            elif isinstance(content, ImageContent):
+                binaries.append(ToolBinaryResult(data=content.data, mime_type=content.mimeType, type="image"))
+            elif isinstance(content, EmbeddedResource):
+                resource = content.resource
+                if isinstance(resource, BlobResourceContents):
+                    binaries.append(
+                        ToolBinaryResult(
+                            data=resource.blob,
+                            mime_type=resource.mimeType or "application/octet-stream",
+                            type="resource",
+                            description=str(resource.uri),
+                        )
+                    )
+                else:
+                    texts.append(resource.text)
+            else:
+                texts.append(content.model_dump_json(exclude_none=True))
+        if result.structuredContent is not None:
+            structured: Any = result.structuredContent
+            # FastMCP explicitly marks envelopes for non-object return values.
+            if unwrap_result and list(structured) == ["result"]:
+                structured = structured["result"]
+            texts = [structured if isinstance(structured, str) else json.dumps(structured)]
+        return ToolResult(
+            result_type="failure" if result.isError else "success",
+            text_result_for_llm="".join(texts),
+            binary_results_for_llm=binaries or None,
+        )
+
+    return _invoke
+
+
+async def build_mcp_tools(
+    specs: list[MCPServerSpec],
+    *,
+    blocked_tools: list[str],
+    exclude_from_context: bool,
+) -> list[Tool]:
+    """Keep MCP execution behind SecLab's confirmation and transport wrappers.
+
+    Registering the raw servers with Copilot as well would bypass those
+    wrappers and start duplicate MCP connections. Terminal tools enforce
+    ``exclude_from_context`` before the runtime can make another model call.
     """
-    if not command or os.path.isabs(command):
-        return command
-    return shutil.which(command) or command
+    from copilot import Tool
 
-
-def _timeout_ms(params: dict[str, Any]) -> int | None:
-    timeout_s = params.get("timeout")
-    return int(timeout_s * 1000) if timeout_s else None
-
-
-def _stdio_config(spec: MCPServerSpec) -> dict[str, Any]:
-    p = spec.params
-    config: dict[str, Any] = {
-        "type": "stdio",
-        "command": _resolve_command(p.get("command", "")),
-        "args": list(p.get("args") or []),
-        "tools": ["*"],  # session-level excluded_tools handles filtering
-    }
-    if p.get("env"):
-        config["env"] = dict(p["env"])
-    # The Copilot SDK does not inherit the runner's cwd by default, which
-    # breaks toolboxes that resolve state directories from relative paths
-    # (e.g. ``MEMCACHE_STATE_DIR=example_taskflow/``). Pin to the current
-    # process directory unless the toolbox specifies one explicitly.
-    config["cwd"] = p.get("cwd") or os.getcwd()
-    timeout = _timeout_ms(p)
-    if timeout:
-        config["timeout"] = timeout
-    return config
-
-
-def _remote_config(spec: MCPServerSpec) -> dict[str, Any]:
-    p = spec.params
-    config: dict[str, Any] = {
-        "type": "sse" if spec.kind == "sse" else "http",
-        "url": p.get("url", ""),
-        "tools": ["*"],
-    }
-    if p.get("headers"):
-        config["headers"] = dict(p["headers"])
-    timeout = _timeout_ms(p)
-    if timeout:
-        config["timeout"] = timeout
-    return config
-
-
-def build_mcp_config(specs: list[MCPServerSpec]) -> dict[str, dict[str, Any]]:
-    """Return a ``mcp_servers`` mapping suitable for ``create_session``.
-
-    Remote specs without a ``url`` (the runner is hosting the transport
-    in-process) are skipped — the SDK cannot consume an in-process
-    transport.
-    """
-    out: dict[str, dict[str, Any]] = {}
+    tools: list[Tool] = []
+    blocked = set(blocked_tools)
     for spec in specs:
-        if spec.kind == "stdio":
-            out[spec.name] = _stdio_config(spec)
-        elif spec.kind in ("sse", "streamable") and spec.params.get("url"):
-            out[spec.name] = _remote_config(spec)
-    return out
+        server = spec.params.get("_native")
+        if server is None:
+            raise BackendCapabilityError(
+                f"copilot_sdk: MCP server {spec.name!r} must be connected by the taskflow runner"
+            )
+        for tool in await server.list_tools_unfiltered():
+            if tool.name in blocked or tool.name.removeprefix(server.namespace) in blocked:
+                continue
+            output_schema = getattr(tool, "outputSchema", None) or {}
+            tools.append(
+                Tool(
+                    name=tool.name,
+                    description=tool.description or "",
+                    parameters=tool.inputSchema,
+                    handler=_tool_handler(
+                        server, tool.name, unwrap_result=output_schema.get("x-fastmcp-wrap-result") is True
+                    ),
+                    defer="never",
+                    is_terminal=exclude_from_context,
+                )
+            )
+    return tools
