@@ -22,6 +22,7 @@ from ..errors import (
     BackendMaxTurnsError,
     BackendRateLimitError,
     BackendTimeoutError,
+    BackendTransportError,
     BackendUnexpectedError,
 )
 
@@ -148,10 +149,13 @@ class OpenAIAgentsBackend:
         except TRANSIENT_TRANSPORT_ERRORS as exc:
             # A stream cut mid-body never becomes APIConnectionError: the
             # SDK wraps httpx only around the request, and the body is
-            # iterated after that returns. Mapped to the same neutral class
-            # as APIConnectionError above, which is where "connection died,
-            # retry it" already lands.
-            raise BackendTimeoutError(str(exc)) from exc
+            # iterated after that returns.
+            #
+            # Not BackendTimeoutError: that one is retried in place by
+            # drive_backend_stream, which does not reset capture state, so
+            # tool results already recorded this turn would be duplicated
+            # on every attempt.
+            raise BackendTransportError(str(exc)) from exc
         except BadRequestError as exc:
             raise BackendBadRequestError(str(exc)) from exc
         except AgentsException as exc:

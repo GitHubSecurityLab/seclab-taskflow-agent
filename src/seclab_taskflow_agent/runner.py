@@ -53,6 +53,7 @@ from .sdk.errors import (
     BackendBadRequestError,
     BackendMaxTurnsError,
     BackendTimeoutError,
+    BackendTransportError,
     BackendUnexpectedError,
 )
 from .shell_utils import shell_tool_call
@@ -68,22 +69,35 @@ MAX_API_RETRY = 5  # Maximum number of consecutive API error retries
 TASK_RETRY_LIMIT = 3  # Maximum retry attempts for a failed task
 TASK_RETRY_BACKOFF = 10  # Initial backoff in seconds between task retries
 
-# Transient failures a retry can reasonably clear.
+# Retried once, at the branch, and nowhere else.
 #
-# Neutral types only. The transport exceptions that actually caused this --
-# a response stream cut mid-body -- are translated into BackendTimeoutError
-# by the backend adapters, which is where SDK and transport knowledge
-# belongs (see sdk/errors.py and sdk/_transport.py). The runner matches the
-# neutral hierarchy so it needs no SDK or httpx import of its own.
+# Neutral types only. A response stream cut mid-body is translated into
+# BackendTransportError by the backend adapters, which is where SDK and
+# transport knowledge belongs (see sdk/errors.py and sdk/_transport.py), so
+# the runner needs no SDK or httpx import of its own.
 #
-# The builtins are kept because non-backend awaitables in a branch can still
-# raise them directly; no httpx exception inherits from either, which is why
-# they were never sufficient on their own.
+# This set is deliberately NOT the task-level set below. Three retry loops
+# are nested here -- drive_backend_stream retries in place up to
+# MAX_API_RETRY, this branch loop wraps that, and the task loop wraps the
+# fan-out -- so a class caught by more than one of them multiplies rather
+# than adds. BackendTimeoutError is caught by the stream loop, and the
+# sequential path measures 6 x 3 x 3 = 54 full agent turns for it; routing
+# transport failures there too would have put the most common long-run
+# failure on that path.
 #
-# These are applied per branch in _deploy_with_transport_retry rather than
-# around the whole task, for two reasons: the concurrent fan-out converts
-# branch exceptions to False before the task loop can see them, and a
-# task-level replay would re-execute branches that already succeeded.
+# The branch is the right single owner for this class. It is the only loop
+# that resets capture state between attempts, so a tool result recorded
+# before the stream died cannot be published twice, and it replays only the
+# failed branch rather than its completed siblings. It is also the only
+# level that works for concurrent fan-out at all, which converts branch
+# exceptions to False before the task loop can see them.
+_BRANCH_RETRIABLE_ERRORS: tuple[type[BaseException], ...] = (BackendTransportError,)
+
+# Task-level retry, unchanged. The stream loop already retries
+# BackendTimeoutError in place; this is the pre-existing outer loop for it
+# and for branch code that raises the builtins directly. No httpx exception
+# inherits from either builtin, which is why these never caught a dropped
+# response stream.
 _RETRIABLE_BACKEND_ERRORS: tuple[type[BaseException], ...] = (
     BackendTimeoutError,
     ConnectionError,
@@ -526,7 +540,7 @@ async def _deploy_with_transport_retry(
             return await deploy(payload, model)
         except (KeyboardInterrupt, SystemExit):
             raise
-        except _RETRIABLE_BACKEND_ERRORS as exc:
+        except _BRANCH_RETRIABLE_ERRORS as exc:
             remaining = TASK_RETRY_LIMIT - attempt - 1
             if remaining <= 0:
                 logging.error(

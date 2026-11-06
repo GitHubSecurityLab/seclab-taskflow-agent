@@ -201,7 +201,7 @@ def _make_transport_drop():
         (_make_timeout, errors.BackendTimeoutError),
         (_make_rate_limit, errors.BackendRateLimitError),
         (_make_bad_request, errors.BackendBadRequestError),
-        (_make_transport_drop, errors.BackendTimeoutError),
+        (_make_transport_drop, errors.BackendTransportError),
     ],
 )
 def test_run_streamed_translates_openai_errors(backend, raw_exc_factory, neutral_cls):

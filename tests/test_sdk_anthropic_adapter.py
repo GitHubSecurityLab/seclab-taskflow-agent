@@ -693,9 +693,9 @@ def test_5xx_api_status_errors_map_to_unexpected(monkeypatch):
         asyncio.run(_run())
 
 
-def test_mid_stream_transport_drop_maps_to_backend_timeout():
+def test_mid_stream_transport_drop_maps_to_backend_transport_error():
     """A connection that dies while the response body is being read must
-    reach the runner as a neutral BackendTimeoutError.
+    reach the runner as a neutral BackendTransportError.
 
     The SDK does not do this for us. _base_client wraps httpx only around
     the send() call, and with stream=True that returns once the response
@@ -708,7 +708,7 @@ def test_mid_stream_transport_drop_maps_to_backend_timeout():
     import httpx
 
     from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
-    from seclab_taskflow_agent.sdk.errors import BackendTimeoutError
+    from seclab_taskflow_agent.sdk.errors import BackendTransportError
 
     class _DyingStream:
         def __aiter__(self):
@@ -748,7 +748,7 @@ def test_mid_stream_transport_drop_maps_to_backend_timeout():
         async for _ in backend.run_streamed(handle, "hi", max_turns=1):
             pass
 
-    with pytest.raises(BackendTimeoutError):
+    with pytest.raises(BackendTransportError):
         asyncio.run(_run())
 
 

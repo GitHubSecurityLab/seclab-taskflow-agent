@@ -32,6 +32,7 @@ from ..errors import (
     BackendMaxTurnsError,
     BackendRateLimitError,
     BackendTimeoutError,
+    BackendTransportError,
     BackendUnexpectedError,
 )
 
@@ -303,7 +304,12 @@ class AnthropicSDKBackend:
                 # while the body is iterated here. Without this the raw
                 # httpx error falls past every clause below, since none of
                 # them are in its MRO.
-                raise BackendTimeoutError(str(exc)) from exc
+                #
+                # Not BackendTimeoutError: that one is retried in place by
+                # drive_backend_stream, which does not reset capture state,
+                # so tool results already recorded this turn would be
+                # duplicated on every attempt.
+                raise BackendTransportError(str(exc)) from exc
             except anthropic.APIStatusError as exc:
                 # Map all 4xx (auth, permission, not_found, conflict,
                 # unprocessable, bad_request) to BackendBadRequestError so

@@ -939,16 +939,54 @@ def test_retriable_set_contains_no_sdk_or_transport_types():
     backend entirely, since each adapter has to be fixed on its own.
     """
     import seclab_taskflow_agent.runner as runner_mod
-    from seclab_taskflow_agent.runner import _RETRIABLE_BACKEND_ERRORS
-    from seclab_taskflow_agent.sdk.errors import BackendTimeoutError
+    from seclab_taskflow_agent.runner import (
+        _BRANCH_RETRIABLE_ERRORS,
+        _RETRIABLE_BACKEND_ERRORS,
+    )
+    from seclab_taskflow_agent.sdk.errors import (
+        BackendTimeoutError,
+        BackendTransportError,
+    )
 
+    assert BackendTransportError in _BRANCH_RETRIABLE_ERRORS
     assert BackendTimeoutError in _RETRIABLE_BACKEND_ERRORS
-    for exc in _RETRIABLE_BACKEND_ERRORS:
+    for exc in (*_BRANCH_RETRIABLE_ERRORS, *_RETRIABLE_BACKEND_ERRORS):
         assert exc.__module__ in ("builtins", "seclab_taskflow_agent.sdk.errors"), (
             f"{exc.__module__}.{exc.__name__} leaks transport detail into the runner"
         )
     assert not hasattr(runner_mod, "httpx")
     assert not hasattr(runner_mod, "httpcore")
+
+
+def test_the_two_retry_levels_share_no_exception_class():
+    """Three retry loops are nested: drive_backend_stream retries in place,
+    the branch loop wraps that, and the task loop wraps the fan-out. A class
+    caught by more than one multiplies instead of adding -- the sequential
+    path measures 6 x 3 x 3 = 54 full agent turns for a class all three
+    accept, each one replaying the whole conversation.
+
+    So the branch set and the task set must stay disjoint, and nothing in
+    the branch set may be caught by the stream loop.
+    """
+    from seclab_taskflow_agent.runner import (
+        _BRANCH_RETRIABLE_ERRORS,
+        _RETRIABLE_BACKEND_ERRORS,
+    )
+    from seclab_taskflow_agent.sdk.errors import BackendTimeoutError
+
+    for branch_exc in _BRANCH_RETRIABLE_ERRORS:
+        for task_exc in _RETRIABLE_BACKEND_ERRORS:
+            assert not issubclass(branch_exc, task_exc), (
+                f"{branch_exc.__name__} is retried at both levels, "
+                f"so attempts multiply"
+            )
+        # drive_backend_stream retries BackendTimeoutError in place, without
+        # resetting capture state. Nothing retried at the branch may be
+        # caught there too.
+        assert not issubclass(branch_exc, BackendTimeoutError), (
+            f"{branch_exc.__name__} would also be retried inside "
+            f"drive_backend_stream, duplicating recorded tool results"
+        )
 
 
 def test_transient_transport_errors_are_classified_retriable():
@@ -997,14 +1035,14 @@ def test_a_concurrent_branch_retries_its_transport_failure():
     level that reaches this path.
     """
     from seclab_taskflow_agent.runner import _fan_out_deploys
-    from seclab_taskflow_agent.sdk.errors import BackendTimeoutError
+    from seclab_taskflow_agent.sdk.errors import BackendTransportError
 
     calls: list[int] = []
 
     async def deploy(payload, model):
         calls.append(payload)
         if len([c for c in calls if c == payload]) == 1:
-            raise BackendTimeoutError("peer closed connection")
+            raise BackendTransportError("peer closed connection")
         return True
 
     with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):
@@ -1023,14 +1061,14 @@ def test_a_retried_branch_does_not_replay_its_siblings():
     branch keeps completed siblings untouched.
     """
     from seclab_taskflow_agent.runner import _fan_out_deploys
-    from seclab_taskflow_agent.sdk.errors import BackendTimeoutError
+    from seclab_taskflow_agent.sdk.errors import BackendTransportError
 
     calls: list[int] = []
 
     async def deploy(payload, model):
         calls.append(payload)
         if payload == 2 and calls.count(2) == 1:
-            raise BackendTimeoutError("peer closed connection")
+            raise BackendTransportError("peer closed connection")
         return True
 
     with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):
@@ -1078,7 +1116,7 @@ def test_a_failed_attempts_tool_result_does_not_survive_the_retry():
     from seclab_taskflow_agent.runner import (
         _Branch, _branch_result_source, _fan_out_deploys,
     )
-    from seclab_taskflow_agent.sdk.errors import BackendTimeoutError
+    from seclab_taskflow_agent.sdk.errors import BackendTransportError
 
     branch = _Branch(agents={}, prompt="p", rm=MagicMock(), item_index=0, label="b")
     attempts: list[int] = []
@@ -1088,7 +1126,7 @@ def test_a_failed_attempts_tool_result_does_not_survive_the_retry():
         payload.sink.append(ToolResult(text=f"attempt-{len(attempts)}"))
         if len(attempts) == 1:
             payload.message = "partial"
-            raise BackendTimeoutError("peer closed connection")
+            raise BackendTransportError("peer closed connection")
         return True
 
     with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):

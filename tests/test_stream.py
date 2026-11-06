@@ -281,3 +281,58 @@ def test_drive_final_message_empty_when_ends_on_tool(monkeypatch):
     _drive(backend, record_message=sink)
     # A turn ending on a tool call produced no trailing prose.
     assert seen == [""]
+
+
+def test_drive_backend_stream_does_not_retry_transport_errors():
+    """The in-place retry here must not see BackendTransportError.
+
+    This loop re-runs the whole turn without resetting capture state, so
+    every attempt re-records whatever tool results the agent produced
+    before the connection died. It is also nested inside the branch and
+    task retries, so a class caught here as well multiplies rather than
+    adds -- the sequential path measures 6 x 3 x 3 = 54 full agent turns.
+
+    Retry for a dropped stream belongs to _deploy_with_transport_retry,
+    which does reset capture state and replays only the failed branch.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from seclab_taskflow_agent._stream import drive_backend_stream
+    from seclab_taskflow_agent.sdk import ToolEnd
+    from seclab_taskflow_agent.sdk.errors import BackendTransportError
+
+    attempts = {"n": 0}
+    recorded: list[str] = []
+
+    class _Backend:
+        def run_streamed(self, handle, prompt, *, max_turns):  # noqa: ARG002
+            attempts["n"] += 1
+            n = attempts["n"]
+
+            async def gen():
+                # A tool ran and was recorded before the drop.
+                yield ToolEnd(tool_name="write_finding", text=f"finding-{n}")
+                raise BackendTransportError("peer closed connection")
+
+            return gen()
+
+    async def _record(tool_result):
+        recorded.append(tool_result.text)
+
+    async def _run():
+        await drive_backend_stream(
+            backend_impl=_Backend(), agent_handle=None, prompt="p", max_turns=1,
+            run_hooks=None, async_task=False, task_id="t",
+            max_api_retry=5, initial_rate_limit_backoff=5,
+            max_rate_limit_backoff=120, record_tool_result=_record,
+        )
+
+    with (
+        patch("seclab_taskflow_agent._stream.render_model_output", new=AsyncMock()),
+        pytest.raises(BackendTransportError),
+    ):
+        asyncio.run(_run())
+
+    assert attempts["n"] == 1, "the stream loop must not retry a dropped stream"
+    assert recorded == ["finding-1"], "a retry here would duplicate tool results"
