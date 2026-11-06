@@ -1074,26 +1074,31 @@ def test_a_concurrent_branch_retries_its_transport_failure():
     branch exception into False, so run_prompts() returns normally and the
     task-level retry never sees it. Retrying inside the branch is the only
     level that reaches this path.
+
+    Covers every member of the branch set, not just one: the branch is the
+    sole owner of transient retry, so each class has to actually land here.
     """
-    from seclab_taskflow_agent.runner import _fan_out_deploys
-    from seclab_taskflow_agent.sdk.errors import BackendTransportError
+    from seclab_taskflow_agent.runner import _BRANCH_RETRIABLE_ERRORS, _fan_out_deploys
 
-    calls: list[int] = []
+    for exc_cls in _BRANCH_RETRIABLE_ERRORS:
+        calls: list[int] = []
 
-    async def deploy(payload, model):
-        calls.append(payload)
-        if len([c for c in calls if c == payload]) == 1:
-            raise BackendTransportError("peer closed connection")
-        return True
+        async def deploy(payload, model, _exc=exc_cls):
+            calls.append(payload)
+            if len([c for c in calls if c == payload]) == 1:
+                raise _exc("peer closed connection")
+            return True
 
-    with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):
-        ok = asyncio.run(_fan_out_deploys(
-            [(1, MagicMock())], deploy,
-            concurrent=True, concurrency=2, completion_policy="all",
-        ))
+        with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):
+            ok = asyncio.run(_fan_out_deploys(
+                [(1, MagicMock())], deploy,
+                concurrent=True, concurrency=2, completion_policy="all",
+            ))
 
-    assert ok is True
-    assert calls == [1, 1], "the failing branch should have been retried once"
+        assert ok is True, f"{exc_cls.__name__} was not retried"
+        assert calls == [1, 1], (
+            f"{exc_cls.__name__} should have been retried once, got {calls}"
+        )
 
 
 def test_a_retried_branch_does_not_replay_its_siblings():
@@ -1182,3 +1187,47 @@ def test_a_failed_attempts_tool_result_does_not_survive_the_retry():
     assert [tr.text for tr in branch.sink] == ["attempt-2"]
     assert _branch_result_source(branch, capture_response=False).text == "attempt-2"
     assert branch.message is None
+
+
+def test_deploy_task_agents_does_not_swallow_timeouts():
+    """A timeout must reach _deploy_with_transport_retry.
+
+    deploy_task_agents handles each neutral backend error and returns
+    False. That is right for the deterministic ones -- max turns, bad
+    request, unexpected -- because retrying them repeats the same failure.
+    It is wrong for BackendTimeoutError now that the branch is the sole
+    owner of transient retry: returning False would give an idle stream
+    exactly one attempt and report it as a branch that merely did not
+    complete, which the concurrent fan-out cannot distinguish from any
+    other failure since it already maps exceptions to False.
+
+    Asserted on the source rather than driven end to end: reaching that
+    handler needs the MCP session machinery stood up, and the property
+    worth pinning is simply that this handler re-raises while its
+    neighbours do not.
+    """
+    import importlib
+    import inspect
+    import re
+
+    runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
+    src = inspect.getsource(runner_mod.deploy_task_agents)
+
+    handlers = re.split(r"\n        except ", src)
+    by_class = {}
+    for chunk in handlers[1:]:
+        cls = chunk.split(" ", 1)[0].rstrip(":")
+        by_class[cls] = chunk
+
+    assert "BackendTimeoutError" in by_class, "timeout handler not found"
+    timeout_body = by_class["BackendTimeoutError"]
+    assert re.search(r"^\s+raise\s*$", timeout_body, re.MULTILINE), (
+        "deploy_task_agents swallows BackendTimeoutError; the branch retry "
+        "never sees it and an idle stream gets a single attempt"
+    )
+
+    for cls in ("BackendMaxTurnsError", "BackendBadRequestError", "BackendUnexpectedError"):
+        assert cls in by_class, f"{cls} handler not found"
+        assert not re.search(r"^\s+raise\s*$", by_class[cls], re.MULTILINE), (
+            f"{cls} is deterministic and should not be retried"
+        )

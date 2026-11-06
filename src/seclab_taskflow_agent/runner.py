@@ -935,6 +935,14 @@ async def deploy_task_agents(
         except BackendTimeoutError as e:
             await render_model_output(f"** 🤖❗ Timeout Error: {e}\n", async_task=async_task, task_id=task_id)
             logging.exception("API Timeout")
+            # Propagate rather than returning False. This is the only
+            # transient class the handlers above would otherwise swallow,
+            # and swallowing it hides the failure from
+            # _deploy_with_transport_retry, which is now the sole owner of
+            # transient retry. Returning False here would give an idle
+            # stream exactly one attempt and report it as a branch that
+            # simply did not complete.
+            raise
 
         if async_task:
             await flush_async_output(task_id, label=stream_label)
@@ -1040,14 +1048,20 @@ async def run_main(
 
     if personality_path:
         personality = available_tools.get_personality(personality_path)
-        await deploy_task_agents(
-            available_tools,
-            {personality_path: personality},
-            prompt or "",
-            run_hooks=TaskRunHooks(on_tool_end=on_tool_end_hook, on_tool_start=on_tool_start_hook),
-            record_tool_result=record_tool_result,
-            record_usage=record_usage,
-        )
+        try:
+            await deploy_task_agents(
+                available_tools,
+                {personality_path: personality},
+                prompt or "",
+                run_hooks=TaskRunHooks(on_tool_end=on_tool_end_hook, on_tool_start=on_tool_start_hook),
+                record_tool_result=record_tool_result,
+                record_usage=record_usage,
+            )
+        except BackendTimeoutError:
+            # The single-personality path has no branch above it to retry,
+            # so it keeps the previous behaviour of reporting and moving on.
+            # deploy_task_agents has already rendered the timeout message.
+            logging.exception("Timed out running %r", personality_path)
 
     if taskflow_path or resume_session_id:
         # Handle session resume
