@@ -26,6 +26,7 @@ from seclab_taskflow_agent.sdk.copilot_sdk.backend import (
 from seclab_taskflow_agent.sdk.errors import (
     BackendBadRequestError,
     BackendCapabilityError,
+    BackendTransportError,
     BackendUnexpectedError,
 )
 
@@ -311,3 +312,47 @@ def test_mcp_specs_are_used():
     # Sanity: MCPServerSpec is what build() consumes via build_mcp_config.
     spec = _spec(mcp_servers=[MCPServerSpec(name="m", kind="stdio", params={"command": "x"})])
     CopilotSDKBackend().validate(spec)
+
+
+def test_run_streamed_translates_transport_failure_on_send():
+    """A connection that dies while sending must reach the branch retry.
+
+    ``session.send()`` is the only call in this adapter that does network
+    I/O inline, so it is the only place a transport exception can actually
+    surface. It used to sit outside the try, so an httpx error there
+    escaped untranslated and the runner's retry never saw it.
+
+    The event loop below cannot raise these: it reads an ``asyncio.Queue``,
+    and ``Queue.get()`` only raises ``CancelledError``. A connection dying
+    after send succeeds arrives as a SESSION_ERROR event, or not at all,
+    in which case ``drive_backend_stream``'s idle timeout is what catches
+    it.
+    """
+    import httpx
+
+    class _DyingSession(_FakeSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.aborted = False
+
+        async def send(self, prompt: str) -> str:  # noqa: ARG002
+            raise httpx.ReadError("connection died during send")
+
+        async def abort(self) -> None:
+            self.aborted = True
+
+    session = _DyingSession()
+
+    async def _run():
+        handle = SimpleNamespace(
+            client=None, session=session, event_queue=asyncio.Queue()
+        )
+        async for _ in CopilotSDKBackend().run_streamed(handle, "go", max_turns=10):
+            pass
+
+    with pytest.raises(BackendTransportError):
+        asyncio.run(_run())
+
+    # Moving send() inside the try also brought it under the finally, so a
+    # failed send now tears the session down instead of leaving it open.
+    assert session.aborted, "a failed send should still abort the session"

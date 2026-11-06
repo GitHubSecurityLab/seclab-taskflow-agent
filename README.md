@@ -132,6 +132,42 @@ model_settings:
     backend: openai_agents
 ```
 
+### Error Translation and Retry
+
+Each backend adapter translates its SDK-native exceptions into the neutral
+hierarchy in `sdk/errors.py`, so the runner applies retry policy without
+importing any SDK. Adding a backend means translating its errors too;
+`test_every_backend_adapter_translates_transport_failures` enforces this
+across the registry.
+
+Transport failures need explicit handling and are easy to miss. The vendor
+SDKs wrap `httpx` only around the call that sends the request, and with
+streaming that returns once the response headers arrive while the body is
+iterated afterwards. A connection that dies mid-body therefore surfaces as a
+bare `httpx` error, in neither the SDK's own hierarchy nor the builtins'.
+`sdk/_transport.py` enumerates the retriable ones, and each adapter maps them
+to `BackendTransportError`. The set is enumerated rather than catching
+`httpx.TransportError` wholesale, because `LocalProtocolError` means the
+request was malformed and `UnsupportedProtocol` is deterministic.
+
+Retry has a single owner: the branch, in `_deploy_with_transport_retry`. It is
+the only level that resets capture state between attempts, so a tool result
+recorded before a failure cannot be published twice or become the task's named
+output, and it replays only the branch that failed rather than siblings that
+may already have written to external systems. Retries are bounded by
+`TASK_RETRY_LIMIT` with linear backoff from `TASK_RETRY_BACKOFF`.
+
+Nothing above or below that retries the same classes. Retry loops nest, so a
+class caught at two levels multiplies attempts rather than adding them, and
+each attempt replays the whole conversation. `drive_backend_stream` retries
+only `BackendRateLimitError`, where no content has been emitted yet, and takes
+a `reset_capture` callback so even that path cannot leave a partial attempt's
+results behind.
+
+Deterministic failures are not retried at all. `BackendMaxTurnsError`,
+`BackendBadRequestError` and `BackendCapabilityError` would repeat the same
+failure with backoff, so `deploy_task_agents` reports them and returns.
+
 ### Session Recovery
 
 Taskflow runs are automatically checkpointed at the task level. If a task

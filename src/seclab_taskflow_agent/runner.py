@@ -12,7 +12,6 @@ from __future__ import annotations
 
 __all__ = [
     "DEFAULT_MAX_TURNS",
-    "MAX_API_RETRY",
     "MAX_RATE_LIMIT_BACKOFF",
     "RATE_LIMIT_BACKOFF",
     "deploy_task_agents",
@@ -53,6 +52,7 @@ from .sdk.errors import (
     BackendBadRequestError,
     BackendMaxTurnsError,
     BackendTimeoutError,
+    BackendTransportError,
     BackendUnexpectedError,
 )
 from .shell_utils import shell_tool_call
@@ -64,9 +64,40 @@ if TYPE_CHECKING:  # Hook callbacks still use openai-agents types; fully decoupl
 DEFAULT_MAX_TURNS = 50  # Maximum agent turns before forced termination
 RATE_LIMIT_BACKOFF = 5  # Initial backoff in seconds after a rate-limit response
 MAX_RATE_LIMIT_BACKOFF = 120  # Maximum backoff cap in seconds for rate-limit retries
-MAX_API_RETRY = 5  # Maximum number of consecutive API error retries
-TASK_RETRY_LIMIT = 3  # Maximum retry attempts for a failed task
-TASK_RETRY_BACKOFF = 10  # Initial backoff in seconds between task retries
+TASK_RETRY_LIMIT = 3  # Maximum retry attempts for a failed branch
+TASK_RETRY_BACKOFF = 10  # Initial backoff in seconds between branch retries
+
+# Retried once, at the branch, and nowhere else.
+#
+# Neutral types only. A response stream cut mid-body is translated into
+# BackendTransportError by the backend adapters, which is where SDK and
+# transport knowledge belongs (see sdk/errors.py and sdk/_transport.py), so
+# the runner needs no SDK or httpx import of its own.
+#
+# The branch is the single owner of transient retry, because it is the only
+# level that can do it correctly. It resets capture state between attempts,
+# so a tool result recorded before a failure cannot be published twice or
+# become the task's named output via sink[-1]. It replays only the failed
+# branch, leaving siblings that already ran -- and already wrote to external
+# systems -- alone. And it is the only level that works for concurrent
+# fan-out at all, which converts branch exceptions to False before any outer
+# loop can see them.
+#
+# Nothing above this retries these classes. Retry loops nest here, so a class
+# caught at two levels multiplies rather than adds: when drive_backend_stream
+# retried BackendTimeoutError in place and the task loop retried it again,
+# the sequential path measured 6 x 3 x 3 = 54 full agent turns, each one
+# replaying the whole conversation.
+#
+# The builtins are included because branch code can raise them directly; no
+# httpx exception inherits from either, which is why they never caught a
+# dropped response stream.
+_BRANCH_RETRIABLE_ERRORS: tuple[type[BaseException], ...] = (
+    BackendTransportError,
+    BackendTimeoutError,
+    ConnectionError,
+    TimeoutError,
+)
 
 
 def _resolve_model_config(
@@ -466,6 +497,68 @@ def _capture_task_output(
         store.set_output(output_id, value)
 
 
+async def _deploy_with_transport_retry(
+    deploy: Callable[[Any, ResolvedModel], Awaitable[bool]],
+    payload: Any,
+    model: ResolvedModel,
+) -> bool:
+    """Run one branch, retrying it alone on a transient transport failure.
+
+    Retrying here rather than around the whole task is what makes widening
+    the retriable set safe. The task-level loop restarts every branch, so a
+    ``repeat_prompt`` task whose second item loses its response stream would
+    re-execute the first -- and that item may already have written to an
+    external system. A branch that fails here replays only itself; completed
+    siblings keep their results.
+
+    It is also the only level that works for concurrent fan-out at all.
+    ``_fan_out_deploys`` gathers with ``return_exceptions=True`` and turns a
+    branch exception into ``False``, so ``run_prompts`` returns normally and
+    the task-level ``except`` never sees it. Transport failures in that path
+    were previously not retried at any level.
+
+    Capture state is reset between attempts. A ``_Branch`` is reused across
+    them and its tool-result callbacks append to a mutable ``sink``, so an
+    attempt that records a result and then loses its stream would otherwise
+    leave that value behind: ``_final_result`` reads ``sink[-1]``, so it
+    could become the task's named output even though the attempt failed, and
+    projection records every entry into the shared store. Only the attempt
+    that succeeds should be able to publish anything.
+    """
+    for attempt in range(TASK_RETRY_LIMIT):
+        if attempt and isinstance(payload, _Branch):
+            payload.sink.clear()
+            payload.message = None
+            payload.output = None
+            payload.output_set = False
+        try:
+            return await deploy(payload, model)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except _BRANCH_RETRIABLE_ERRORS as exc:
+            remaining = TASK_RETRY_LIMIT - attempt - 1
+            if remaining <= 0:
+                logging.error(
+                    "Branch failed after %s attempts: %s", TASK_RETRY_LIMIT, exc
+                )
+                raise
+            backoff = TASK_RETRY_BACKOFF * (attempt + 1)
+            # Rendered, not just logged. The task-level loop this replaced
+            # told the operator it was retrying; without this a long audit
+            # would silently pause for the backoff with nothing on screen.
+            await render_model_output(
+                f"** 🤖🔄 Branch failed: {exc}\n"
+                f"** 🤖🔄 Retrying in {backoff}s ({remaining} attempts left)\n"
+            )
+            logging.warning(
+                "Branch attempt %s failed (%s); retrying in %ss (%s left)",
+                attempt + 1, exc, backoff, remaining,
+            )
+            await asyncio.sleep(backoff)
+    # TASK_RETRY_LIMIT is >= 1, so the loop always returns or re-raises.
+    raise RuntimeError("transport retry loop exited without a result")
+
+
 async def _fan_out_deploys(
     work_items: list[tuple[Any, ResolvedModel]],
     deploy: Callable[[Any, ResolvedModel], Awaitable[bool]],
@@ -506,14 +599,14 @@ async def _fan_out_deploys(
         # transient backend errors.
         oks: list[bool] = []
         for payload, model in work_items:
-            oks.append(await deploy(payload, model))
+            oks.append(await _deploy_with_transport_retry(deploy, payload, model))
         return _completion(oks, completion_policy)
 
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
     async def _guarded(payload: Any, model: ResolvedModel) -> bool:
         async with semaphore:
-            return await deploy(payload, model)
+            return await _deploy_with_transport_retry(deploy, payload, model)
 
     gathered = await asyncio.gather(
         *(_guarded(payload, model) for payload, model in work_items),
@@ -659,6 +752,7 @@ async def deploy_task_agents(
     record_tool_result: Callable[[ToolResult], Awaitable[None]] | None = None,
     record_usage: Callable[[Any], Awaitable[None]] | None = None,
     record_message: Callable[[str], Awaitable[None]] | None = None,
+    reset_capture: Callable[[], Awaitable[None]] | None = None,
 ) -> bool:
     """Deploy and run task agents with MCP servers.
 
@@ -827,12 +921,12 @@ async def deploy_task_agents(
                 run_hooks=run_hooks,
                 async_task=async_task,
                 task_id=task_id,
-                max_api_retry=MAX_API_RETRY,
                 initial_rate_limit_backoff=RATE_LIMIT_BACKOFF,
                 max_rate_limit_backoff=MAX_RATE_LIMIT_BACKOFF,
                 record_tool_result=record_tool_result,
                 record_usage=record_usage,
                 record_message=record_message,
+                reset_capture=reset_capture,
             )
             complete = True
 
@@ -848,13 +942,28 @@ async def deploy_task_agents(
         except BackendTimeoutError as e:
             await render_model_output(f"** 🤖❗ Timeout Error: {e}\n", async_task=async_task, task_id=task_id)
             logging.exception("API Timeout")
-
-        if async_task:
-            await flush_async_output(task_id, label=stream_label)
+            # Propagate rather than returning False. This is the only
+            # transient class the handlers above would otherwise swallow,
+            # and swallowing it hides the failure from
+            # _deploy_with_transport_retry, which is now the sole owner of
+            # transient retry. Returning False here would give an idle
+            # stream exactly one attempt and report it as a branch that
+            # simply did not complete.
+            raise
 
         return complete
 
     finally:
+        # Flush here rather than on the success path alone, so that every
+        # exit releases this attempt's buffered output. task_id is unique
+        # per call, so an attempt that propagates -- the re-raised timeout
+        # above, or BackendTransportError and the builtins, which have no
+        # handler here -- would otherwise strand its partial response and
+        # its own diagnostic in the router under an id no later attempt
+        # knows. OutputRouter.flush pops the buffer and no-ops when it is
+        # absent, so this is safe on the paths that already returned.
+        if async_task:
+            await flush_async_output(task_id, label=stream_label)
         watchdog_ping()
         if agent_handle is not None:
             try:
@@ -953,14 +1062,26 @@ async def run_main(
 
     if personality_path:
         personality = available_tools.get_personality(personality_path)
-        await deploy_task_agents(
-            available_tools,
-            {personality_path: personality},
-            prompt or "",
-            run_hooks=TaskRunHooks(on_tool_end=on_tool_end_hook, on_tool_start=on_tool_start_hook),
-            record_tool_result=record_tool_result,
-            record_usage=record_usage,
-        )
+        try:
+            await deploy_task_agents(
+                available_tools,
+                {personality_path: personality},
+                prompt or "",
+                run_hooks=TaskRunHooks(on_tool_end=on_tool_end_hook, on_tool_start=on_tool_start_hook),
+                record_tool_result=record_tool_result,
+                record_usage=record_usage,
+            )
+        except (BackendTimeoutError, BackendTransportError) as exc:
+            # The single-personality path has no branch above it to retry,
+            # so both transient classes report and move on, matching the
+            # behaviour this path had for timeouts before retry moved to
+            # the branch. deploy_task_agents renders its own message for
+            # BackendTimeoutError but has no handler for
+            # BackendTransportError, so that one is rendered here or the
+            # user gets a bare traceback.
+            if isinstance(exc, BackendTransportError):
+                await render_model_output(f"** 🤖❗ Connection Lost: {exc}\n")
+            logging.exception("Transient failure running %r", personality_path)
 
     if taskflow_path or resume_session_id:
         # Handle session resume
@@ -1224,6 +1345,14 @@ async def run_main(
                             watchdog_ping()
                             branch.message = text
 
+                        async def _branch_reset() -> None:
+                            # Any retry below this point replays the turn, so
+                            # whatever the failed attempt recorded must go.
+                            # _final_result reads sink[-1] and projection
+                            # replays every entry into the shared store.
+                            branch.sink.clear()
+                            branch.message = None
+
                         run_hooks = TaskRunHooks(
                             on_tool_end=_branch_tool_end, on_tool_start=on_tool_start_hook
                         )
@@ -1242,6 +1371,7 @@ async def run_main(
                             record_tool_result=branch_record,
                             record_usage=record_usage,
                             record_message=_branch_record_message,
+                            reset_capture=_branch_reset,
                             model=rm.model,
                             model_par=rm.model_settings,
                             api_type=rm.api_type,
@@ -1284,47 +1414,36 @@ async def run_main(
 
                     return complete
 
-                # Execute the task with auto-retry on transient failures.
-                # Only retry on network/API errors — deterministic failures
-                # and errors after side-effectful work should not be retried
-                # blindly (e.g. repeat_prompt tasks may have already written
-                # data to external systems).
+                # Execute the task. Retry on transient failures happens one
+                # level down, per branch, so that a branch which already
+                # succeeded -- and may already have written to an external
+                # system -- is not replayed when a sibling fails.
                 task_complete = False
                 last_task_error: BaseException | None = None
                 task_started = time.monotonic()
                 usage_at_task_start = usage_store.as_dict()
 
-                for attempt in range(TASK_RETRY_LIMIT):
-                    try:
-                        task_complete = await run_prompts(
-                            async_task=async_task,
-                            max_concurrent_tasks=max_concurrent_tasks,
-                        )
-                        last_task_error = None
-                        break
-                    except (KeyboardInterrupt, SystemExit):
-                        raise
-                    except (BackendTimeoutError, ConnectionError, TimeoutError) as exc:
-                        last_task_error = exc
-                        remaining = TASK_RETRY_LIMIT - attempt - 1
-                        if remaining > 0:
-                            backoff = TASK_RETRY_BACKOFF * (attempt + 1)
-                            await render_model_output(
-                                f"** 🤖🔄 Task {task_name!r} failed: {exc}\n"
-                                f"** 🤖🔄 Retrying in {backoff}s ({remaining} attempts left)\n"
-                            )
-                            logging.warning("Task %r attempt %s failed: %s", task_name, attempt + 1, exc)
-                            await asyncio.sleep(backoff)
-                        else:
-                            logging.error(
-                                "Task %r failed after %s attempts: %s", task_name, TASK_RETRY_LIMIT, exc
-                            )
-                    except Exception as exc:
-                        last_task_error = exc
-                        logging.error("Task %r failed (non-retriable): %s", task_name, exc)
-                        break
+                try:
+                    task_complete = await run_prompts(
+                        async_task=async_task,
+                        max_concurrent_tasks=max_concurrent_tasks,
+                    )
+                    last_task_error = None
+                except (KeyboardInterrupt, SystemExit):
+                    raise
+                except Exception as exc:
+                    # Deliberately no retry here. Transient failures are
+                    # retried per branch in _deploy_with_transport_retry,
+                    # which replays only the branch that failed; retrying
+                    # at this level rebuilds the whole fan-out and re-runs
+                    # branches that already succeeded and already wrote to
+                    # external systems. Anything reaching this point has
+                    # either exhausted its branch retries or is not
+                    # transient.
+                    last_task_error = exc
+                    logging.error("Task %r failed: %s", task_name, exc)
 
-                # If all retries exhausted with an exception, save and re-raise
+                # If the task failed, save and re-raise
                 if last_task_error is not None:
                     session.mark_failed(f"Task {task_name!r}: {last_task_error}")
                     await render_model_output(

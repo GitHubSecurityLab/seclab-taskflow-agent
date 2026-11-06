@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from seclab_taskflow_agent import sdk
@@ -83,3 +85,44 @@ def test_mcp_server_spec_round_trip():
     spec = MCPServerSpec(name="x", kind="stdio", params={"command": "/bin/x"})
     assert spec.kind == "stdio"
     assert spec.params["command"] == "/bin/x"
+
+
+def test_every_backend_adapter_translates_transport_failures():
+    """A new adapter must not be able to forget this quietly.
+
+    Transport exceptions are in neither the vendor SDKs' hierarchies nor
+    the builtins', so an adapter that does not translate them lets them
+    escape past the runner's retry entirely. That is what left a dropped
+    response stream unretried, and it was missed in copilot_sdk on the
+    first pass precisely because nothing checked.
+
+    Asserted across the registry rather than per adapter, so adding a
+    backend without translating fails here rather than in production.
+
+    Necessary but not sufficient, and copilot_sdk is the proof: it had the
+    handler while the one call that actually does inline network I/O sat
+    outside the try, so the clause could never fire. A new adapter still
+    needs a behavioural test that drives a transport failure through it.
+    """
+    import importlib
+    import re
+
+    from seclab_taskflow_agent.sdk import _KNOWN
+
+    for name in _KNOWN:
+        mod = importlib.import_module(
+            f"seclab_taskflow_agent.sdk.{name}.backend"
+        )
+        src = inspect.getsource(mod)
+        # Match the handler, not the import. An earlier version of this
+        # test looked for the bare names and passed with the except clause
+        # deleted, because the import line alone satisfied it.
+        assert re.search(r"except\s+TRANSIENT_TRANSPORT_ERRORS\b", src), (
+            f"{name} has no 'except TRANSIENT_TRANSPORT_ERRORS' handler; a "
+            f"dropped stream would escape the runner's retry entirely. "
+            f"See sdk/_transport.py"
+        )
+        assert re.search(r"raise\s+BackendTransportError\b", src), (
+            f"{name} catches transport failures but does not raise the "
+            f"neutral BackendTransportError the runner retries on"
+        )

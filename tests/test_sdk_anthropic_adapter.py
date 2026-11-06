@@ -691,3 +691,82 @@ def test_5xx_api_status_errors_map_to_unexpected(monkeypatch):
 
     with pytest.raises(BackendUnexpectedError):
         asyncio.run(_run())
+
+
+def test_mid_stream_transport_drop_maps_to_backend_transport_error():
+    """A connection that dies while the response body is being read must
+    reach the runner as a neutral BackendTransportError.
+
+    The SDK does not do this for us. _base_client wraps httpx only around
+    the send() call, and with stream=True that returns once the response
+    headers arrive -- the body is iterated afterwards, outside the handler.
+    So the raw httpx error is what escapes, and it is in neither
+    anthropic.APIError's hierarchy nor the builtins', which is how a
+    long-running run died unretried.
+    """
+    import asyncio
+    import httpx
+
+    from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
+    from seclab_taskflow_agent.sdk.errors import BackendTransportError
+
+    class _DyingStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            # Raised during body iteration, not from the request.
+            raise httpx.RemoteProtocolError("peer closed connection")
+
+    class _StreamCtx:
+        async def __aenter__(self):
+            return _DyingStream()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _FakeMessages:
+        def stream(self, **kwargs):  # noqa: ARG002
+            return _StreamCtx()
+
+    class _FakeClient:
+        def __init__(self):
+            self.messages = _FakeMessages()
+
+    handle = _AnthropicHandle(
+        client=_FakeClient(),
+        system_prompt="",
+        model="claude-opus-4.7",
+        max_tokens=100,
+        tools=[],
+        mcp_server_map={},
+        model_settings={"prompt_caching": False},
+    )
+    backend = AnthropicSDKBackend()
+
+    async def _run():
+        async for _ in backend.run_streamed(handle, "hi", max_turns=1):
+            pass
+
+    with pytest.raises(BackendTransportError):
+        asyncio.run(_run())
+
+
+def test_raw_transport_errors_are_outside_every_hierarchy_the_runner_knew():
+    """Guards the premise of the fix above.
+
+    If httpx ever makes its transport errors inherit from the builtins, or
+    anthropic starts wrapping stream-body failures, the adapter translation
+    becomes redundant rather than load-bearing -- and this test says so.
+    """
+    import anthropic
+    import httpx
+
+    for exc in (
+        httpx.RemoteProtocolError,
+        httpx.ReadError,
+        httpx.ReadTimeout,
+        httpx.ConnectError,
+    ):
+        assert not issubclass(exc, anthropic.APIError), exc.__name__
+        assert not issubclass(exc, (ConnectionError, TimeoutError)), exc.__name__

@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from .._transport import TRANSIENT_TRANSPORT_ERRORS
 from ..base import AgentSpec, StreamEvent, TextDelta, TokenUsage, ToolEnd
 from ..errors import (
     BackendBadRequestError,
@@ -31,6 +32,7 @@ from ..errors import (
     BackendMaxTurnsError,
     BackendRateLimitError,
     BackendTimeoutError,
+    BackendTransportError,
     BackendUnexpectedError,
 )
 
@@ -295,6 +297,19 @@ class AnthropicSDKBackend:
                 raise BackendRateLimitError(str(exc)) from exc
             except anthropic.APITimeoutError as exc:
                 raise BackendTimeoutError(str(exc)) from exc
+            except TRANSIENT_TRANSPORT_ERRORS as exc:
+                # A stream cut mid-body never becomes APIConnectionError:
+                # _base_client wraps httpx only around the send() call, and
+                # with stream=True that returns at the response headers
+                # while the body is iterated here. Without this the raw
+                # httpx error falls past every clause below, since none of
+                # them are in its MRO.
+                #
+                # Not BackendTimeoutError: that one is retried in place by
+                # drive_backend_stream, which does not reset capture state,
+                # so tool results already recorded this turn would be
+                # duplicated on every attempt.
+                raise BackendTransportError(str(exc)) from exc
             except anthropic.APIStatusError as exc:
                 # Map all 4xx (auth, permission, not_found, conflict,
                 # unprocessable, bad_request) to BackendBadRequestError so

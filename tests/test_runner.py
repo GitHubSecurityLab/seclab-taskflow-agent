@@ -925,3 +925,469 @@ class TestAggregateFanin:
             ("m2", 0, 20),
             ("m1", 1, 30),
         ]
+
+
+# --- the branch is the sole owner of transient retry ----------------------
+
+def test_branch_retriable_set_contains_no_sdk_or_transport_types():
+    """The runner must not learn about httpx.
+
+    sdk/errors.py states the contract: adapters translate their SDK-native
+    exceptions into the neutral hierarchy so the runner can apply retry
+    policy without importing any SDK. An earlier version of this fix matched
+    httpx types here instead, which inverted that and also missed the second
+    backend entirely, since each adapter has to be fixed on its own.
+    """
+    import importlib
+
+    from seclab_taskflow_agent.sdk.errors import (
+        BackendTimeoutError,
+        BackendTransportError,
+    )
+
+    # importlib rather than `import ... as`, because the module is also
+    # reached through `from seclab_taskflow_agent.runner import ...` in this
+    # file and mixing the two forms is a CodeQL finding.
+    runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
+    branch_set = runner_mod._BRANCH_RETRIABLE_ERRORS  # noqa: SLF001 - asserting on internals is the point
+
+    assert BackendTransportError in branch_set
+    assert BackendTimeoutError in branch_set
+    for exc in branch_set:
+        assert exc.__module__ in ("builtins", "seclab_taskflow_agent.sdk.errors"), (
+            f"{exc.__module__}.{exc.__name__} leaks transport detail into the runner"
+        )
+    assert not hasattr(runner_mod, "httpx")
+    assert not hasattr(runner_mod, "httpcore")
+
+
+def test_no_second_retry_level_exists_in_the_runner():
+    """Retry loops nest, so a class caught at two levels multiplies rather
+    than adds. When drive_backend_stream retried BackendTimeoutError in
+    place and the task loop retried it again, the sequential path measured
+    6 x 3 x 3 = 54 full agent turns, each replaying the whole conversation.
+
+    The task-level retriable set is gone on purpose: retrying there rebuilds
+    the whole fan-out and re-runs branches that already succeeded, which for
+    a repeat_prompt task means repeating external writes.
+    """
+    import importlib
+
+    runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
+
+    assert not hasattr(runner_mod, "_RETRIABLE_BACKEND_ERRORS"), (
+        "a second retriable set reintroduces multiplication; the branch "
+        "is the only level that resets capture state and spares siblings"
+    )
+
+
+def test_the_stream_loop_retries_nothing_the_branch_retries():
+    """Retry loops nest, so a class caught at two levels multiplies rather
+    than adds -- the sequential path measured 6 x 3 x 3 = 54 full agent
+    turns when drive_backend_stream and the task loop both accepted
+    BackendTimeoutError.
+
+    Driven through the real stream driver rather than asserted on the class
+    hierarchy, because what matters is whether it retries, not how the
+    exceptions are related.
+    """
+    from seclab_taskflow_agent._stream import drive_backend_stream
+    from seclab_taskflow_agent.runner import _BRANCH_RETRIABLE_ERRORS
+
+    for exc_cls in _BRANCH_RETRIABLE_ERRORS:
+        calls = {"n": 0}
+
+        class _Backend:
+            def run_streamed(self, handle, prompt, *, max_turns):  # noqa: ARG002
+                calls["n"] += 1
+
+                async def gen():
+                    raise exc_cls("boom")
+                    yield  # pragma: no cover - unreachable, makes this a generator
+
+                return gen()
+
+        async def _run():
+            await drive_backend_stream(
+                backend_impl=_Backend(), agent_handle=None, prompt="p",
+                max_turns=1, run_hooks=None, async_task=False, task_id="t",
+                initial_rate_limit_backoff=1, max_rate_limit_backoff=4,
+            )
+
+        # Not pytest.raises(exc_cls): the driver converts a bare TimeoutError
+        # into BackendTimeoutError via its idle-stream handler, since
+        # asyncio.TimeoutError is the builtin on 3.11+. What is under test is
+        # that it does not retry, whatever comes out.
+        with (
+            patch("seclab_taskflow_agent._stream.render_model_output", new=AsyncMock()),
+            pytest.raises(Exception),  # noqa: B017, PT011
+        ):
+            asyncio.run(_run())
+
+        assert calls["n"] == 1, (
+            f"{exc_cls.__name__} is retried by drive_backend_stream as well "
+            f"as the branch, so attempts multiply"
+        )
+
+
+def test_transient_transport_errors_are_classified_retriable():
+    """The adapters' translation set, which is where transport lives now."""
+    import httpcore
+    import httpx
+
+    from seclab_taskflow_agent.sdk._transport import TRANSIENT_TRANSPORT_ERRORS
+
+    for exc in (
+        httpx.RemoteProtocolError,
+        httpcore.RemoteProtocolError,
+        httpx.ReadTimeout,
+        httpx.ConnectTimeout,
+        httpx.PoolTimeout,
+        httpx.ConnectError,
+        httpx.ReadError,
+        httpx.WriteError,
+    ):
+        assert issubclass(exc, TRANSIENT_TRANSPORT_ERRORS), exc.__name__
+        # The point of the change: none of these reached the runner before,
+        # and none of them are caught by the neutral builtins either.
+        assert not issubclass(exc, (ConnectionError, TimeoutError)), exc.__name__
+
+
+def test_deterministic_transport_errors_are_not_retried():
+    """Retrying these just repeats the same failure three times with backoff.
+    LocalProtocolError means the request we built is malformed, and
+    UnsupportedProtocol is a fixed property of the URL. This is why the set
+    is enumerated instead of catching httpx.TransportError wholesale.
+    """
+    import httpx
+
+    from seclab_taskflow_agent.sdk._transport import TRANSIENT_TRANSPORT_ERRORS
+
+    for exc in (httpx.LocalProtocolError, httpx.UnsupportedProtocol):
+        assert not issubclass(exc, TRANSIENT_TRANSPORT_ERRORS), exc.__name__
+
+
+# --- transport retries happen per branch ----------------------------------
+
+def test_a_concurrent_branch_retries_its_transport_failure():
+    """The concurrent fan-out gathers with return_exceptions=True and turns a
+    branch exception into False, so run_prompts() returns normally and the
+    task-level retry never sees it. Retrying inside the branch is the only
+    level that reaches this path.
+
+    Covers every member of the branch set, not just one: the branch is the
+    sole owner of transient retry, so each class has to actually land here.
+    """
+    from seclab_taskflow_agent.runner import _BRANCH_RETRIABLE_ERRORS, _fan_out_deploys
+
+    for exc_cls in _BRANCH_RETRIABLE_ERRORS:
+        calls: list[int] = []
+
+        async def deploy(payload, model, _exc=exc_cls):
+            calls.append(payload)
+            if len([c for c in calls if c == payload]) == 1:
+                raise _exc("peer closed connection")
+            return True
+
+        render = AsyncMock()
+        with (
+            patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()),
+            patch("seclab_taskflow_agent.runner.render_model_output", new=render),
+        ):
+            ok = asyncio.run(_fan_out_deploys(
+                [(1, MagicMock())], deploy,
+                concurrent=True, concurrency=2, completion_policy="all",
+            ))
+
+        assert ok is True, f"{exc_cls.__name__} was not retried"
+        assert calls == [1, 1], (
+            f"{exc_cls.__name__} should have been retried once, got {calls}"
+        )
+        # The task-level loop this replaced told the operator it was
+        # retrying. Logging alone would leave a long audit sitting through
+        # the backoff with nothing on screen.
+        rendered = " ".join(str(c.args[0]) for c in render.await_args_list if c.args)
+        assert "Retrying in" in rendered, (
+            f"{exc_cls.__name__} retry was not surfaced to the operator"
+        )
+
+
+def test_a_retried_branch_does_not_replay_its_siblings():
+    """A task-level replay re-runs every branch, which is unsafe when an
+    earlier one has already written to an external system. Retrying per
+    branch keeps completed siblings untouched.
+    """
+    from seclab_taskflow_agent.runner import _fan_out_deploys
+    from seclab_taskflow_agent.sdk.errors import BackendTransportError
+
+    calls: list[int] = []
+
+    async def deploy(payload, model):
+        calls.append(payload)
+        if payload == 2 and calls.count(2) == 1:
+            raise BackendTransportError("peer closed connection")
+        return True
+
+    with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):
+        ok = asyncio.run(_fan_out_deploys(
+            [(1, MagicMock()), (2, MagicMock())], deploy,
+            concurrent=False, concurrency=1, completion_policy="all",
+        ))
+
+    assert ok is True
+    assert calls.count(1) == 1, "the branch that already succeeded must not re-run"
+    assert calls.count(2) == 2
+
+
+def test_a_deterministic_branch_error_is_not_retried():
+    """Retrying a malformed request just repeats the same failure with
+    backoff. The adapters map a 4xx to BackendBadRequestError precisely so
+    it stays outside the retriable set.
+    """
+    from seclab_taskflow_agent.runner import _fan_out_deploys
+    from seclab_taskflow_agent.sdk.errors import BackendBadRequestError
+
+    calls: list[int] = []
+
+    async def deploy(payload, model):
+        calls.append(payload)
+        raise BackendBadRequestError("malformed request")
+
+    with pytest.raises(BackendBadRequestError):
+        asyncio.run(_fan_out_deploys(
+            [(1, MagicMock())], deploy,
+            concurrent=False, concurrency=1, completion_policy="all",
+        ))
+    assert calls == [1], "a deterministic failure should be attempted once"
+
+
+def test_a_failed_attempts_tool_result_does_not_survive_the_retry():
+    """A _Branch is reused across attempts and its tool-result callbacks
+    append to a mutable sink. Without resetting between attempts, an attempt
+    that records a result and then loses its stream leaves that value behind:
+    _final_result reads sink[-1], so it could become the task's named output
+    even though the attempt failed, and projection records every sink entry
+    into the shared store.
+    """
+    from seclab_taskflow_agent.results import ToolResult
+    from seclab_taskflow_agent.runner import (
+        _Branch, _branch_result_source, _fan_out_deploys,
+    )
+    from seclab_taskflow_agent.sdk.errors import BackendTransportError
+
+    branch = _Branch(agents={}, prompt="p", rm=MagicMock(), item_index=0, label="b")
+    attempts: list[int] = []
+
+    async def deploy(payload, model):
+        attempts.append(len(attempts))
+        payload.sink.append(ToolResult(text=f"attempt-{len(attempts)}"))
+        if len(attempts) == 1:
+            payload.message = "partial"
+            raise BackendTransportError("peer closed connection")
+        return True
+
+    with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):
+        ok = asyncio.run(_fan_out_deploys(
+            [(branch, branch.rm)], deploy,
+            concurrent=False, concurrency=1, completion_policy="all",
+        ))
+
+    assert ok is True
+    assert len(attempts) == 2
+    # Only the successful attempt's result may be published.
+    assert [tr.text for tr in branch.sink] == ["attempt-2"]
+    assert _branch_result_source(branch, capture_response=False).text == "attempt-2"
+    assert branch.message is None
+
+
+# --- deploy_task_agents behaviour, driven rather than inspected -----------
+
+def _drive_deploy(*, drive=None, reset_capture=None, async_task=False):
+    """Run deploy_task_agents with the MCP machinery stubbed out.
+
+    The real blocker to testing this is ``await servers_connected.wait()``:
+    mcp_session_task normally sets that event, so a plain AsyncMock leaves
+    it hanging forever. Setting it in the stub is what makes the whole
+    function reachable, which is why these are behavioural tests now rather
+    than assertions about the source.
+    """
+    import importlib
+
+    runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
+
+    async def _fake_mcp(entries, connected, cleanup):  # noqa: ARG001
+        connected.set()
+        await cleanup.wait()
+
+    backend_impl = MagicMock()
+    backend_impl.build = AsyncMock(return_value=MagicMock())
+    backend_impl.aclose = AsyncMock()
+    backend_impl.validate = MagicMock()
+
+    available_tools = MagicMock()
+    available_tools.get_toolboxes.return_value = []
+    personality = MagicMock()
+    personality.toolboxes = []
+
+    with (
+        patch.object(runner_mod, "mcp_session_task", new=_fake_mcp),
+        patch.object(runner_mod, "build_mcp_servers", return_value=[]),
+        patch.object(runner_mod, "drive_backend_stream", new=drive or AsyncMock()),
+        patch.object(runner_mod, "render_model_output", new=AsyncMock()),
+        patch.object(runner_mod, "mcp_system_prompt", return_value=""),
+        patch.object(runner_mod, "get_backend", return_value=backend_impl),
+        patch.object(runner_mod, "resolve_backend_name", return_value="x"),
+        patch.object(runner_mod, "flush_async_output", new=AsyncMock()) as flush,
+    ):
+        async def _go():
+            return await asyncio.wait_for(
+                runner_mod.deploy_task_agents(
+                    available_tools, {"a": personality}, "go",
+                    async_task=async_task, reset_capture=reset_capture,
+                ),
+                timeout=20,
+            )
+
+        try:
+            result = asyncio.run(_go())
+            return result, flush, None
+        except Exception as exc:  # noqa: BLE001 - returned for the caller to assert on
+            return None, flush, exc
+
+
+def test_deploy_task_agents_does_not_swallow_timeouts():
+    """A timeout must reach _deploy_with_transport_retry.
+
+    deploy_task_agents handles each neutral backend error and returns
+    False. That is right for the deterministic ones, because retrying them
+    repeats the same failure. It is wrong for BackendTimeoutError now that
+    the branch is the sole owner of transient retry: returning False would
+    give an idle stream exactly one attempt and report it as a branch that
+    merely did not complete, which the concurrent fan-out cannot tell apart
+    from any other failure since it already maps exceptions to False.
+    """
+    from seclab_taskflow_agent.sdk.errors import (
+        BackendBadRequestError,
+        BackendMaxTurnsError,
+        BackendTimeoutError,
+        BackendUnexpectedError,
+    )
+
+    _, _, exc = _drive_deploy(drive=AsyncMock(side_effect=BackendTimeoutError("idle")))
+    assert isinstance(exc, BackendTimeoutError), (
+        f"BackendTimeoutError must propagate to the branch retry, got {exc!r}"
+    )
+
+    for err in (
+        BackendMaxTurnsError("turns"),
+        BackendBadRequestError("bad"),
+        BackendUnexpectedError("boom"),
+    ):
+        result, _, exc = _drive_deploy(drive=AsyncMock(side_effect=err))
+        assert exc is None, f"{type(err).__name__} should not propagate, got {exc!r}"
+        assert result is False, f"{type(err).__name__} should report an incomplete task"
+
+
+def test_deploy_task_agents_flushes_buffered_output_on_every_exit():
+    """Buffered async output must be released even when the attempt raises.
+
+    task_id is a fresh uuid per call, so an attempt that propagates strands
+    its partial response and its own diagnostic in the router under an id
+    no later attempt knows. This affects the re-raised BackendTimeoutError
+    and also BackendTransportError, which has no handler here at all.
+    """
+    from seclab_taskflow_agent.sdk.errors import (
+        BackendTimeoutError,
+        BackendTransportError,
+    )
+
+    # Success still flushes.
+    result, flush, exc = _drive_deploy(async_task=True)
+    assert exc is None
+    assert result is True
+    assert flush.await_count == 1, "the success path must still flush"
+
+    # Both propagating classes flush on the way out.
+    for err in (BackendTimeoutError("idle"), BackendTransportError("drop")):
+        _, flush, exc = _drive_deploy(
+            drive=AsyncMock(side_effect=err), async_task=True
+        )
+        assert isinstance(exc, type(err)), f"{type(err).__name__} should propagate"
+        assert flush.await_count == 1, (
+            f"{type(err).__name__} left buffered output stranded under a dead task_id"
+        )
+
+    # async_task=False has nothing buffered, so it must not flush.
+    _, flush, _ = _drive_deploy(async_task=False)
+    assert flush.await_count == 0
+
+
+def test_deploy_task_agents_forwards_reset_capture():
+    """The branch's capture reset has to actually reach the stream driver.
+
+    _branch_reset is built in the fan-out and threaded through
+    deploy_task_agents into drive_backend_stream. Unit tests cover the
+    driver honouring the callback, but nothing covered the wiring, so a
+    mis-thread would have been invisible.
+    """
+    seen = {}
+
+    async def _drive(**kwargs):
+        seen.update(kwargs)
+
+    async def _reset():
+        pass  # pragma: no cover - identity is what is asserted
+
+    _drive_deploy(drive=_drive, reset_capture=_reset)
+    assert seen.get("reset_capture") is _reset, (
+        "reset_capture did not reach drive_backend_stream; a retry there "
+        "would leave a failed attempt's tool results in the sink"
+    )
+
+
+def test_single_personality_path_survives_both_transient_classes():
+    """The -p path has no branch above it, so nothing retries it.
+
+    Before retry moved to the branch, a timeout here was reported and the
+    run continued. BackendTransportError is new and deploy_task_agents has
+    no handler for it, so without this the user would get a bare traceback
+    for a dropped connection while a timeout stayed graceful.
+    """
+    import importlib
+
+    from seclab_taskflow_agent.sdk.errors import (
+        BackendTimeoutError,
+        BackendTransportError,
+    )
+
+    runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
+
+    for err in (BackendTimeoutError("idle"), BackendTransportError("drop")):
+        render = AsyncMock()
+        with (
+            patch.object(
+                runner_mod, "deploy_task_agents", new=AsyncMock(side_effect=err)
+            ),
+            patch.object(runner_mod, "render_model_output", new=render),
+            patch.object(runner_mod, "start_watchdog", new=MagicMock()),
+        ):
+            available_tools = MagicMock()
+            # Must not raise: the run reports and carries on.
+            asyncio.run(
+                runner_mod.run_main(
+                    available_tools,
+                    "examples.personalities.echo",
+                    None,
+                    {},
+                    "hi",
+                )
+            )
+
+        rendered = " ".join(
+            str(c.args[0]) for c in render.await_args_list if c.args
+        )
+        if isinstance(err, BackendTransportError):
+            assert "Connection Lost" in rendered, (
+                "a dropped connection on the -p path rendered nothing, so the "
+                "user would see only a traceback"
+            )

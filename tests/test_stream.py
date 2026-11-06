@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -73,6 +74,10 @@ class _ScriptedBackend:
         if isinstance(script, Exception):
             raise script
         for ev in script:
+            # An exception inside a script raises at that point, so a test
+            # can emit events (which get recorded) and then fail mid-stream.
+            if isinstance(ev, Exception):
+                raise ev
             yield ev
 
 
@@ -86,12 +91,12 @@ def _drive(backend: _ScriptedBackend, hooks: Any = None, record_tool_result: Any
             run_hooks=hooks,
             async_task=False,
             task_id="t",
-            max_api_retry=kwargs.get("max_api_retry", 1),
             initial_rate_limit_backoff=kwargs.get("initial_rate_limit_backoff", 1),
             max_rate_limit_backoff=kwargs.get("max_rate_limit_backoff", 4),
             record_tool_result=record_tool_result,
             record_usage=kwargs.get("record_usage"),
             record_message=kwargs.get("record_message"),
+            reset_capture=kwargs.get("reset_capture"),
         )
     )
 
@@ -134,24 +139,76 @@ def test_drive_forwards_token_usage(monkeypatch):
     assert seen == [usage]
 
 
-def test_drive_retries_then_succeeds_on_timeout(monkeypatch):
+def test_drive_does_not_retry_timeouts_in_place(monkeypatch):
+    """BackendTimeoutError now propagates on the first occurrence.
+
+    This loop used to retry it up to max_api_retry times. That was wrong
+    twice over. It cannot undo what a failed attempt already recorded --
+    record_tool_result has fired for every ToolEnd before the failure -- so
+    each attempt appended another copy and a failed attempt's value could
+    become the task's named output via sink[-1]. And it sits inside the
+    branch and task retry loops, so retrying here multiplied rather than
+    added: the sequential path measured 6 x 3 x 3 = 54 full agent turns.
+
+    Retry now belongs to _deploy_with_transport_retry alone, which resets
+    capture state and replays only the branch that failed.
+    """
     monkeypatch.setattr(
         "seclab_taskflow_agent._stream.render_model_output",
         lambda *_a, **_kw: _noop(),
     )
-    backend = _ScriptedBackend([BackendTimeoutError("once"), [TextDelta(text="ok")]])
-    _drive(backend, max_api_retry=2)
-    assert backend.calls == 2
+    recorded: list[str] = []
 
+    async def _record(tool_result):
+        recorded.append(tool_result.text)
 
-def test_drive_raises_after_retries_exhausted(monkeypatch):
-    monkeypatch.setattr(
-        "seclab_taskflow_agent._stream.render_model_output",
-        lambda *_a, **_kw: _noop(),
+    backend = _ScriptedBackend(
+        [
+            [ToolEnd(tool_name="write_finding", text="finding-1"),
+             BackendTimeoutError("idle")],
+            [TextDelta(text="ok")],
+        ]
     )
-    backend = _ScriptedBackend([BackendTimeoutError("a"), BackendTimeoutError("b")])
     with pytest.raises(BackendTimeoutError):
-        _drive(backend, max_api_retry=1)
+        _drive(backend, record_tool_result=_record)
+
+    assert backend.calls == 1, "the stream loop must not retry in place"
+    assert recorded == ["finding-1"], "a retry here would duplicate tool results"
+
+
+def test_drive_resets_capture_before_a_retried_attempt(monkeypatch):
+    """The rate-limit path still retries in place, so it must reset first.
+
+    Rate limits are returned at the response headers in practice, before any
+    content streams, but the invariant should not depend on that: any retry
+    anywhere discards what the failed attempt recorded.
+    """
+    monkeypatch.setattr(
+        "seclab_taskflow_agent._stream.render_model_output",
+        lambda *_a, **_kw: _noop(),
+    )
+    monkeypatch.setattr("seclab_taskflow_agent._stream.asyncio.sleep", AsyncMock())
+    recorded: list[str] = []
+
+    async def _record(tool_result):
+        recorded.append(tool_result.text)
+
+    async def _reset():
+        recorded.clear()
+
+    backend = _ScriptedBackend(
+        [
+            [ToolEnd(tool_name="write_finding", text="from-failed-attempt"),
+             BackendRateLimitError("429")],
+            [ToolEnd(tool_name="write_finding", text="from-good-attempt")],
+        ]
+    )
+    _drive(backend, record_tool_result=_record, reset_capture=_reset)
+
+    assert backend.calls == 2
+    assert recorded == ["from-good-attempt"], (
+        "the failed attempt's result must not survive the retry"
+    )
 
 
 def test_drive_caps_rate_limit_backoff(monkeypatch):
@@ -211,7 +268,6 @@ def test_drive_raises_on_stream_idle_timeout(monkeypatch):
                 run_hooks=None,
                 async_task=False,
                 task_id="t",
-                max_api_retry=0,
                 initial_rate_limit_backoff=1,
                 max_rate_limit_backoff=4,
             )
@@ -281,3 +337,57 @@ def test_drive_final_message_empty_when_ends_on_tool(monkeypatch):
     _drive(backend, record_message=sink)
     # A turn ending on a tool call produced no trailing prose.
     assert seen == [""]
+
+
+def test_drive_backend_stream_does_not_retry_transport_errors():
+    """The in-place retry here must not see BackendTransportError.
+
+    This loop re-runs the whole turn without resetting capture state, so
+    every attempt re-records whatever tool results the agent produced
+    before the connection died. It is also nested inside the branch and
+    task retries, so a class caught here as well multiplies rather than
+    adds -- the sequential path measures 6 x 3 x 3 = 54 full agent turns.
+
+    Retry for a dropped stream belongs to _deploy_with_transport_retry,
+    which does reset capture state and replays only the failed branch.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from seclab_taskflow_agent._stream import drive_backend_stream
+    from seclab_taskflow_agent.sdk import ToolEnd
+    from seclab_taskflow_agent.sdk.errors import BackendTransportError
+
+    attempts = {"n": 0}
+    recorded: list[str] = []
+
+    class _Backend:
+        def run_streamed(self, handle, prompt, *, max_turns):  # noqa: ARG002
+            attempts["n"] += 1
+            n = attempts["n"]
+
+            async def gen():
+                # A tool ran and was recorded before the drop.
+                yield ToolEnd(tool_name="write_finding", text=f"finding-{n}")
+                raise BackendTransportError("peer closed connection")
+
+            return gen()
+
+    async def _record(tool_result):
+        recorded.append(tool_result.text)
+
+    async def _run():
+        await drive_backend_stream(
+            backend_impl=_Backend(), agent_handle=None, prompt="p", max_turns=1,
+            run_hooks=None, async_task=False, task_id="t",
+            initial_rate_limit_backoff=5,
+            max_rate_limit_backoff=120, record_tool_result=_record,
+        )
+
+    with (
+        patch("seclab_taskflow_agent._stream.render_model_output", new=AsyncMock()),
+        pytest.raises(BackendTransportError),
+    ):
+        asyncio.run(_run())
+
+    assert attempts["n"] == 1, "the stream loop must not retry a dropped stream"
+    assert recorded == ["finding-1"], "a retry here would duplicate tool results"

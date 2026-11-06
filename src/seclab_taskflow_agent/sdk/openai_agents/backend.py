@@ -15,12 +15,14 @@ from agents.exceptions import AgentsException, MaxTurnsExceeded
 from openai import APIConnectionError, APITimeoutError, BadRequestError, RateLimitError
 from openai.types.responses import ResponseTextDeltaEvent
 
+from .._transport import TRANSIENT_TRANSPORT_ERRORS
 from ..base import AgentSpec, StreamEvent, TextDelta, TokenUsage
 from ..errors import (
     BackendBadRequestError,
     BackendMaxTurnsError,
     BackendRateLimitError,
     BackendTimeoutError,
+    BackendTransportError,
     BackendUnexpectedError,
 )
 
@@ -144,6 +146,16 @@ class OpenAIAgentsBackend:
             raise BackendRateLimitError(str(exc)) from exc
         except (APITimeoutError, APIConnectionError) as exc:
             raise BackendTimeoutError(str(exc)) from exc
+        except TRANSIENT_TRANSPORT_ERRORS as exc:
+            # A stream cut mid-body never becomes APIConnectionError: the
+            # SDK wraps httpx only around the request, and the body is
+            # iterated after that returns.
+            #
+            # Not BackendTimeoutError: that one is retried in place by
+            # drive_backend_stream, which does not reset capture state, so
+            # tool results already recorded this turn would be duplicated
+            # on every attempt.
+            raise BackendTransportError(str(exc)) from exc
         except BadRequestError as exc:
             raise BackendBadRequestError(str(exc)) from exc
         except AgentsException as exc:
