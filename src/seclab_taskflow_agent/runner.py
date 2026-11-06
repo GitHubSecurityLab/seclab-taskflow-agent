@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import jinja2
+import httpcore
+import httpx
 from jsonschema.exceptions import ValidationError
 
 from ._stream import drive_backend_stream
@@ -67,6 +69,34 @@ MAX_RATE_LIMIT_BACKOFF = 120  # Maximum backoff cap in seconds for rate-limit re
 MAX_API_RETRY = 5  # Maximum number of consecutive API error retries
 TASK_RETRY_LIMIT = 3  # Maximum retry attempts for a failed task
 TASK_RETRY_BACKOFF = 10  # Initial backoff in seconds between task retries
+
+# Transient failures a task retry can reasonably clear.
+#
+# The task retry below is documented as retrying "network/API errors", but it
+# caught none of the ones raised by the HTTP stack actually in use: no httpx
+# transport exception inherits from the builtin ConnectionError or
+# TimeoutError. httpx.RemoteProtocolError, for instance, is
+# ProtocolError -> TransportError -> RequestError -> HTTPError -> Exception,
+# so a response stream cut mid-body fell through to the non-retriable branch
+# and failed the whole task on the first occurrence. The same applied to read
+# and connect timeouts, pool timeouts, and connection resets.
+#
+# Enumerated rather than catching httpx.TransportError wholesale, because two
+# of its children are not transient: LocalProtocolError means we built a bad
+# request, and UnsupportedProtocol is deterministic. Retrying either just
+# repeats the same failure three times with backoff.
+_TRANSIENT_HTTP_ERRORS: tuple[type[BaseException], ...] = tuple(
+    exc for exc in (
+        getattr(httpx, "TimeoutException", None),     # read/connect/pool/write timeouts
+        getattr(httpx, "NetworkError", None),         # connect/read/write/close errors
+        getattr(httpx, "RemoteProtocolError", None),  # peer closed mid-response
+        getattr(httpx, "ProxyError", None),
+        getattr(httpcore, "TimeoutException", None),
+        getattr(httpcore, "NetworkError", None),
+        getattr(httpcore, "RemoteProtocolError", None),
+        getattr(httpcore, "ProxyError", None),
+    ) if exc is not None
+)
 
 
 def _resolve_model_config(
@@ -1304,7 +1334,8 @@ async def run_main(
                         break
                     except (KeyboardInterrupt, SystemExit):
                         raise
-                    except (BackendTimeoutError, ConnectionError, TimeoutError) as exc:
+                    except (BackendTimeoutError, ConnectionError, TimeoutError,
+                            *_TRANSIENT_HTTP_ERRORS) as exc:
                         last_task_error = exc
                         remaining = TASK_RETRY_LIMIT - attempt - 1
                         if remaining > 0:

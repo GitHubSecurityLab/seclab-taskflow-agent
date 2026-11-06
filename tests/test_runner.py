@@ -925,3 +925,48 @@ class TestAggregateFanin:
             ("m2", 0, 20),
             ("m1", 1, 30),
         ]
+
+
+# --- transient HTTP failures are retriable --------------------------------
+
+def test_transient_http_errors_are_classified_retriable():
+    """The task retry is documented as covering "network/API errors", but no
+    httpx transport exception inherits from the builtin ConnectionError or
+    TimeoutError, so none of them reached it.
+
+    httpx.RemoteProtocolError is
+    ProtocolError -> TransportError -> RequestError -> HTTPError -> Exception,
+    which meant a response stream cut mid-body failed the whole task on the
+    first occurrence instead of being retried.
+    """
+    import httpcore
+    import httpx
+
+    from seclab_taskflow_agent.runner import _TRANSIENT_HTTP_ERRORS
+
+    for exc in (
+        httpx.RemoteProtocolError,
+        httpcore.RemoteProtocolError,
+        httpx.ReadTimeout,
+        httpx.ConnectTimeout,
+        httpx.PoolTimeout,
+        httpx.ConnectError,
+        httpx.ReadError,
+        httpx.WriteError,
+    ):
+        assert issubclass(exc, _TRANSIENT_HTTP_ERRORS), exc.__name__
+        # The point of the change: none of these were caught before.
+        assert not issubclass(exc, (ConnectionError, TimeoutError)), exc.__name__
+
+
+def test_deterministic_http_errors_are_not_retried():
+    """Retrying these just repeats the same failure three times with backoff.
+    LocalProtocolError means the request we built is malformed, and
+    UnsupportedProtocol is a fixed property of the URL.
+    """
+    import httpx
+
+    from seclab_taskflow_agent.runner import _TRANSIENT_HTTP_ERRORS
+
+    for exc in (httpx.LocalProtocolError, httpx.UnsupportedProtocol):
+        assert not issubclass(exc, _TRANSIENT_HTTP_ERRORS), exc.__name__
