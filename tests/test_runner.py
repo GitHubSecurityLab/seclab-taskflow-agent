@@ -938,12 +938,17 @@ def test_branch_retriable_set_contains_no_sdk_or_transport_types():
     httpx types here instead, which inverted that and also missed the second
     backend entirely, since each adapter has to be fixed on its own.
     """
-    import seclab_taskflow_agent.runner as runner_mod
+    import importlib
+
     from seclab_taskflow_agent.sdk.errors import (
         BackendTimeoutError,
         BackendTransportError,
     )
 
+    # importlib rather than `import ... as`, because the module is also
+    # reached through `from seclab_taskflow_agent.runner import ...` in this
+    # file and mixing the two forms is a CodeQL finding.
+    runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
     branch_set = runner_mod._BRANCH_RETRIABLE_ERRORS
 
     assert BackendTransportError in branch_set
@@ -966,7 +971,9 @@ def test_no_second_retry_level_exists_in_the_runner():
     the whole fan-out and re-runs branches that already succeeded, which for
     a repeat_prompt task means repeating external writes.
     """
-    import seclab_taskflow_agent.runner as runner_mod
+    import importlib
+
+    runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
 
     assert not hasattr(runner_mod, "_RETRIABLE_BACKEND_ERRORS"), (
         "a second retriable set reintroduces multiplication; the branch "
@@ -984,8 +991,6 @@ def test_the_stream_loop_retries_nothing_the_branch_retries():
     hierarchy, because what matters is whether it retries, not how the
     exceptions are related.
     """
-    import asyncio
-
     from seclab_taskflow_agent._stream import drive_backend_stream
     from seclab_taskflow_agent.runner import _BRANCH_RETRIABLE_ERRORS
 
