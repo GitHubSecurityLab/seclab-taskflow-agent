@@ -1071,11 +1071,17 @@ async def run_main(
                 record_tool_result=record_tool_result,
                 record_usage=record_usage,
             )
-        except BackendTimeoutError:
+        except (BackendTimeoutError, BackendTransportError) as exc:
             # The single-personality path has no branch above it to retry,
-            # so it keeps the previous behaviour of reporting and moving on.
-            # deploy_task_agents has already rendered the timeout message.
-            logging.exception("Timed out running %r", personality_path)
+            # so both transient classes report and move on, matching the
+            # behaviour this path had for timeouts before retry moved to
+            # the branch. deploy_task_agents renders its own message for
+            # BackendTimeoutError but has no handler for
+            # BackendTransportError, so that one is rendered here or the
+            # user gets a bare traceback.
+            if isinstance(exc, BackendTransportError):
+                await render_model_output(f"** 🤖❗ Connection Lost: {exc}\n")
+            logging.exception("Transient failure running %r", personality_path)
 
     if taskflow_path or resume_session_id:
         # Handle session resume

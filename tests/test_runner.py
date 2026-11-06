@@ -1342,3 +1342,51 @@ def test_deploy_task_agents_forwards_reset_capture():
         "reset_capture did not reach drive_backend_stream; a retry there "
         "would leave a failed attempt's tool results in the sink"
     )
+
+
+def test_single_personality_path_survives_both_transient_classes():
+    """The -p path has no branch above it, so nothing retries it.
+
+    Before retry moved to the branch, a timeout here was reported and the
+    run continued. BackendTransportError is new and deploy_task_agents has
+    no handler for it, so without this the user would get a bare traceback
+    for a dropped connection while a timeout stayed graceful.
+    """
+    import importlib
+
+    from seclab_taskflow_agent.sdk.errors import (
+        BackendTimeoutError,
+        BackendTransportError,
+    )
+
+    runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
+
+    for err in (BackendTimeoutError("idle"), BackendTransportError("drop")):
+        render = AsyncMock()
+        with (
+            patch.object(
+                runner_mod, "deploy_task_agents", new=AsyncMock(side_effect=err)
+            ),
+            patch.object(runner_mod, "render_model_output", new=render),
+            patch.object(runner_mod, "start_watchdog", new=MagicMock()),
+        ):
+            available_tools = MagicMock()
+            # Must not raise: the run reports and carries on.
+            asyncio.run(
+                runner_mod.run_main(
+                    available_tools,
+                    "examples.personalities.echo",
+                    None,
+                    {},
+                    "hi",
+                )
+            )
+
+        rendered = " ".join(
+            str(c.args[0]) for c in render.await_args_list if c.args
+        )
+        if isinstance(err, BackendTransportError):
+            assert "Connection Lost" in rendered, (
+                "a dropped connection on the -p path rendered nothing, so the "
+                "user would see only a traceback"
+            )
