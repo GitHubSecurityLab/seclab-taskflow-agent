@@ -70,16 +70,19 @@ MAX_API_RETRY = 5  # Maximum number of consecutive API error retries
 TASK_RETRY_LIMIT = 3  # Maximum retry attempts for a failed task
 TASK_RETRY_BACKOFF = 10  # Initial backoff in seconds between task retries
 
-# Transient failures a task retry can reasonably clear.
+# Transient failures a retry can reasonably clear.
 #
 # The task retry below is documented as retrying "network/API errors", but it
 # caught none of the ones raised by the HTTP stack actually in use: no httpx
 # transport exception inherits from the builtin ConnectionError or
 # TimeoutError. httpx.RemoteProtocolError, for instance, is
 # ProtocolError -> TransportError -> RequestError -> HTTPError -> Exception,
-# so a response stream cut mid-body fell through to the non-retriable branch
-# and failed the whole task on the first occurrence. The same applied to read
-# and connect timeouts, pool timeouts, and connection resets.
+# so a response stream cut mid-body was never retried at any level.
+#
+# These are applied per branch in _deploy_with_transport_retry rather than
+# around the whole task, for two reasons: the concurrent fan-out converts
+# branch exceptions to False before the task loop can see them, and a
+# task-level replay would re-execute branches that already succeeded.
 #
 # Enumerated rather than catching httpx.TransportError wholesale, because two
 # of its children are not transient: LocalProtocolError means we built a bad
@@ -496,6 +499,50 @@ def _capture_task_output(
         store.set_output(output_id, value)
 
 
+async def _deploy_with_transport_retry(
+    deploy: Callable[[Any, ResolvedModel], Awaitable[bool]],
+    payload: Any,
+    model: ResolvedModel,
+) -> bool:
+    """Run one branch, retrying it alone on a transient transport failure.
+
+    Retrying here rather than around the whole task is what makes widening
+    the retriable set safe. The task-level loop restarts every branch, so a
+    ``repeat_prompt`` task whose second item loses its response stream would
+    re-execute the first -- and that item may already have written to an
+    external system. A branch that fails here replays only itself; completed
+    siblings keep their results.
+
+    It is also the only level that works for concurrent fan-out at all.
+    ``_fan_out_deploys`` gathers with ``return_exceptions=True`` and turns a
+    branch exception into ``False``, so ``run_prompts`` returns normally and
+    the task-level ``except`` never sees it. Transport failures in that path
+    were previously not retried at any level.
+    """
+    last_error: BaseException | None = None
+    for attempt in range(TASK_RETRY_LIMIT):
+        try:
+            return await deploy(payload, model)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except _TRANSIENT_HTTP_ERRORS as exc:
+            last_error = exc
+            remaining = TASK_RETRY_LIMIT - attempt - 1
+            if remaining <= 0:
+                logging.error(
+                    "Branch failed after %s attempts: %s", TASK_RETRY_LIMIT, exc
+                )
+                break
+            backoff = TASK_RETRY_BACKOFF * (attempt + 1)
+            logging.warning(
+                "Branch attempt %s failed (%s); retrying in %ss (%s left)",
+                attempt + 1, exc, backoff, remaining,
+            )
+            await asyncio.sleep(backoff)
+    assert last_error is not None
+    raise last_error
+
+
 async def _fan_out_deploys(
     work_items: list[tuple[Any, ResolvedModel]],
     deploy: Callable[[Any, ResolvedModel], Awaitable[bool]],
@@ -536,14 +583,14 @@ async def _fan_out_deploys(
         # transient backend errors.
         oks: list[bool] = []
         for payload, model in work_items:
-            oks.append(await deploy(payload, model))
+            oks.append(await _deploy_with_transport_retry(deploy, payload, model))
         return _completion(oks, completion_policy)
 
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
     async def _guarded(payload: Any, model: ResolvedModel) -> bool:
         async with semaphore:
-            return await deploy(payload, model)
+            return await _deploy_with_transport_retry(deploy, payload, model)
 
     gathered = await asyncio.gather(
         *(_guarded(payload, model) for payload, model in work_items),
@@ -1334,8 +1381,7 @@ async def run_main(
                         break
                     except (KeyboardInterrupt, SystemExit):
                         raise
-                    except (BackendTimeoutError, ConnectionError, TimeoutError,
-                            *_TRANSIENT_HTTP_ERRORS) as exc:
+                    except (BackendTimeoutError, ConnectionError, TimeoutError) as exc:
                         last_task_error = exc
                         remaining = TASK_RETRY_LIMIT - attempt - 1
                         if remaining > 0:

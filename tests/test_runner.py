@@ -970,3 +970,80 @@ def test_deterministic_http_errors_are_not_retried():
 
     for exc in (httpx.LocalProtocolError, httpx.UnsupportedProtocol):
         assert not issubclass(exc, _TRANSIENT_HTTP_ERRORS), exc.__name__
+
+
+# --- transport retries happen per branch ----------------------------------
+
+def test_a_concurrent_branch_retries_its_transport_failure():
+    """The concurrent fan-out gathers with return_exceptions=True and turns a
+    branch exception into False, so run_prompts() returns normally and the
+    task-level retry never sees it. Retrying inside the branch is the only
+    level that reaches this path.
+    """
+    import httpx
+
+    from seclab_taskflow_agent.runner import _fan_out_deploys
+
+    calls: list[int] = []
+
+    async def deploy(payload, model):
+        calls.append(payload)
+        if len([c for c in calls if c == payload]) == 1:
+            raise httpx.RemoteProtocolError("peer closed connection")
+        return True
+
+    with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):
+        ok = asyncio.run(_fan_out_deploys(
+            [(1, MagicMock())], deploy,
+            concurrent=True, concurrency=2, completion_policy="all",
+        ))
+
+    assert ok is True
+    assert calls == [1, 1], "the failing branch should have been retried once"
+
+
+def test_a_retried_branch_does_not_replay_its_siblings():
+    """A task-level replay re-runs every branch, which is unsafe when an
+    earlier one has already written to an external system. Retrying per
+    branch keeps completed siblings untouched.
+    """
+    import httpx
+
+    from seclab_taskflow_agent.runner import _fan_out_deploys
+
+    calls: list[int] = []
+
+    async def deploy(payload, model):
+        calls.append(payload)
+        if payload == 2 and calls.count(2) == 1:
+            raise httpx.RemoteProtocolError("peer closed connection")
+        return True
+
+    with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):
+        ok = asyncio.run(_fan_out_deploys(
+            [(1, MagicMock()), (2, MagicMock())], deploy,
+            concurrent=False, concurrency=1, completion_policy="all",
+        ))
+
+    assert ok is True
+    assert calls.count(1) == 1, "the branch that already succeeded must not re-run"
+    assert calls.count(2) == 2
+
+
+def test_a_deterministic_branch_error_is_not_retried():
+    import httpx
+
+    from seclab_taskflow_agent.runner import _fan_out_deploys
+
+    calls: list[int] = []
+
+    async def deploy(payload, model):
+        calls.append(payload)
+        raise httpx.LocalProtocolError("malformed request")
+
+    with pytest.raises(httpx.LocalProtocolError):
+        asyncio.run(_fan_out_deploys(
+            [(1, MagicMock())], deploy,
+            concurrent=False, concurrency=1, completion_policy="all",
+        ))
+    assert calls == [1], "a deterministic failure should be attempted once"
