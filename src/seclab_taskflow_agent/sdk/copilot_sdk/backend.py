@@ -217,10 +217,16 @@ class CopilotSDKBackend:
         del max_turns  # the SDK manages turn limits internally
         from copilot.generated.session_events import SessionEventType
 
-        await agent.session.send(prompt)
-
         aborted = False
         try:
+            # Inside the try on purpose. This is the only call in this
+            # adapter that does network I/O inline, so it is the only place
+            # a transport exception can actually surface. The loop below
+            # reads an in-memory queue fed by an on_event callback running
+            # on another thread, so a connection dying mid-turn arrives
+            # there as a SESSION_ERROR event or not at all, never as an
+            # exception from get().
+            await agent.session.send(prompt)
             while True:
                 event = await agent.event_queue.get()
                 etype = getattr(event, "type", None)
@@ -266,17 +272,20 @@ class CopilotSDKBackend:
                 elif etype == SessionEventType.SESSION_IDLE:
                     return
         except TRANSIENT_TRANSPORT_ERRORS as exc:
-            # The event queue is fed by a background task driving the SDK's
-            # session, so a connection that dies mid-turn can surface here
-            # as a raw httpx error rather than a SESSION_ERROR event. Those
-            # are in neither the SDK's hierarchy nor the builtins', so
-            # without this they escape untranslated and the branch retry
-            # never sees them.
+            # Reached from session.send() above, which is the only inline
+            # network call here. The event loop below cannot raise these:
+            # it reads an asyncio.Queue, and Queue.get() only ever raises
+            # CancelledError. Verified by placing an httpx error on the
+            # queue and watching it be treated as an unrecognised event.
             #
-            # A transport failure the SDK has already turned into a
-            # SESSION_ERROR still arrives as BackendUnexpectedError above
-            # and is not retried; distinguishing those would mean matching
-            # on message text, which is not worth the fragility.
+            # So a connection that dies *after* send succeeds is not
+            # covered by this clause. The SDK reports it as a SESSION_ERROR
+            # event, which becomes BackendUnexpectedError above and is not
+            # retried, or it reports nothing and the stream goes quiet
+            # until drive_backend_stream's STREAM_IDLE_TIMEOUT fires, which
+            # does reach the branch retry. Distinguishing a transport
+            # SESSION_ERROR from any other would mean matching on message
+            # text, which is not worth the fragility.
             raise BackendTransportError(str(exc)) from exc
         finally:
             # If the consumer abandoned the iterator (idle-timeout, error,

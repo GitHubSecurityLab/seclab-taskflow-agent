@@ -98,6 +98,11 @@ def test_every_backend_adapter_translates_transport_failures():
 
     Asserted across the registry rather than per adapter, so adding a
     backend without translating fails here rather than in production.
+
+    Necessary but not sufficient, and copilot_sdk is the proof: it had the
+    handler while the one call that actually does inline network I/O sat
+    outside the try, so the clause could never fire. A new adapter still
+    needs a behavioural test that drives a transport failure through it.
     """
     import importlib
     import re
