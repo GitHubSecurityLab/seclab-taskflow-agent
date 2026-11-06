@@ -1200,78 +1200,145 @@ def test_a_failed_attempts_tool_result_does_not_survive_the_retry():
     assert branch.message is None
 
 
+# --- deploy_task_agents behaviour, driven rather than inspected -----------
+
+def _drive_deploy(*, drive=None, reset_capture=None, async_task=False):
+    """Run deploy_task_agents with the MCP machinery stubbed out.
+
+    The real blocker to testing this is ``await servers_connected.wait()``:
+    mcp_session_task normally sets that event, so a plain AsyncMock leaves
+    it hanging forever. Setting it in the stub is what makes the whole
+    function reachable, which is why these are behavioural tests now rather
+    than assertions about the source.
+    """
+    import importlib
+
+    runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
+
+    async def _fake_mcp(entries, connected, cleanup):  # noqa: ARG001
+        connected.set()
+        await cleanup.wait()
+
+    backend_impl = MagicMock()
+    backend_impl.build = AsyncMock(return_value=MagicMock())
+    backend_impl.aclose = AsyncMock()
+    backend_impl.validate = MagicMock()
+
+    available_tools = MagicMock()
+    available_tools.get_toolboxes.return_value = []
+    personality = MagicMock()
+    personality.toolboxes = []
+
+    with (
+        patch.object(runner_mod, "mcp_session_task", new=_fake_mcp),
+        patch.object(runner_mod, "build_mcp_servers", return_value=[]),
+        patch.object(runner_mod, "drive_backend_stream", new=drive or AsyncMock()),
+        patch.object(runner_mod, "render_model_output", new=AsyncMock()),
+        patch.object(runner_mod, "mcp_system_prompt", return_value=""),
+        patch.object(runner_mod, "get_backend", return_value=backend_impl),
+        patch.object(runner_mod, "resolve_backend_name", return_value="x"),
+        patch.object(runner_mod, "flush_async_output", new=AsyncMock()) as flush,
+    ):
+        async def _go():
+            return await asyncio.wait_for(
+                runner_mod.deploy_task_agents(
+                    available_tools, {"a": personality}, "go",
+                    async_task=async_task, reset_capture=reset_capture,
+                ),
+                timeout=20,
+            )
+
+        try:
+            result = asyncio.run(_go())
+            return result, flush, None
+        except Exception as exc:  # noqa: BLE001 - returned for the caller to assert on
+            return None, flush, exc
+
+
 def test_deploy_task_agents_does_not_swallow_timeouts():
     """A timeout must reach _deploy_with_transport_retry.
 
     deploy_task_agents handles each neutral backend error and returns
-    False. That is right for the deterministic ones -- max turns, bad
-    request, unexpected -- because retrying them repeats the same failure.
-    It is wrong for BackendTimeoutError now that the branch is the sole
-    owner of transient retry: returning False would give an idle stream
-    exactly one attempt and report it as a branch that merely did not
-    complete, which the concurrent fan-out cannot distinguish from any
-    other failure since it already maps exceptions to False.
-
-    Asserted on the source rather than driven end to end: reaching that
-    handler needs the MCP session machinery stood up, and the property
-    worth pinning is simply that this handler re-raises while its
-    neighbours do not.
+    False. That is right for the deterministic ones, because retrying them
+    repeats the same failure. It is wrong for BackendTimeoutError now that
+    the branch is the sole owner of transient retry: returning False would
+    give an idle stream exactly one attempt and report it as a branch that
+    merely did not complete, which the concurrent fan-out cannot tell apart
+    from any other failure since it already maps exceptions to False.
     """
-    import importlib
-    import inspect
-    import re
-
-    runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
-    src = inspect.getsource(runner_mod.deploy_task_agents)
-
-    handlers = re.split(r"\n        except ", src)
-    by_class = {}
-    for chunk in handlers[1:]:
-        cls = chunk.split(" ", 1)[0].rstrip(":")
-        by_class[cls] = chunk
-
-    assert "BackendTimeoutError" in by_class, "timeout handler not found"
-    timeout_body = by_class["BackendTimeoutError"]
-    assert re.search(r"^\s+raise\s*$", timeout_body, re.MULTILINE), (
-        "deploy_task_agents swallows BackendTimeoutError; the branch retry "
-        "never sees it and an idle stream gets a single attempt"
+    from seclab_taskflow_agent.sdk.errors import (
+        BackendBadRequestError,
+        BackendMaxTurnsError,
+        BackendTimeoutError,
+        BackendUnexpectedError,
     )
 
-    for cls in ("BackendMaxTurnsError", "BackendBadRequestError", "BackendUnexpectedError"):
-        assert cls in by_class, f"{cls} handler not found"
-        assert not re.search(r"^\s+raise\s*$", by_class[cls], re.MULTILINE), (
-            f"{cls} is deterministic and should not be retried"
-        )
+    _, _, exc = _drive_deploy(drive=AsyncMock(side_effect=BackendTimeoutError("idle")))
+    assert isinstance(exc, BackendTimeoutError), (
+        f"BackendTimeoutError must propagate to the branch retry, got {exc!r}"
+    )
+
+    for err in (
+        BackendMaxTurnsError("turns"),
+        BackendBadRequestError("bad"),
+        BackendUnexpectedError("boom"),
+    ):
+        result, _, exc = _drive_deploy(drive=AsyncMock(side_effect=err))
+        assert exc is None, f"{type(err).__name__} should not propagate, got {exc!r}"
+        assert result is False, f"{type(err).__name__} should report an incomplete task"
 
 
 def test_deploy_task_agents_flushes_buffered_output_on_every_exit():
     """Buffered async output must be released even when the attempt raises.
 
     task_id is a fresh uuid per call, so an attempt that propagates strands
-    its partial response and its own timeout diagnostic in the router under
-    an id no later attempt knows. That affects the re-raised
-    BackendTimeoutError and also BackendTransportError, ConnectionError and
-    TimeoutError, none of which have a handler here at all.
-
-    Asserted on the source for the same reason as the handler guard above:
-    reaching this code needs the MCP session machinery stood up. What is
-    pinned is that the flush lives in the finally, not only on the path
-    that returns.
+    its partial response and its own diagnostic in the router under an id
+    no later attempt knows. This affects the re-raised BackendTimeoutError
+    and also BackendTransportError, which has no handler here at all.
     """
-    import importlib
-    import inspect
-
-    runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
-    src = inspect.getsource(runner_mod.deploy_task_agents)
-
-    head, _, finally_block = src.partition("\n    finally:")
-    assert finally_block, "deploy_task_agents has no outer finally"
-
-    assert "flush_async_output" in finally_block, (
-        "flush_async_output must run in the finally; an attempt that raises "
-        "would otherwise strand its buffered output under a dead task_id"
+    from seclab_taskflow_agent.sdk.errors import (
+        BackendTimeoutError,
+        BackendTransportError,
     )
-    assert "flush_async_output" not in head, (
-        "the success-path flush is redundant now that the finally covers "
-        "every exit, and two call sites invite them drifting apart"
+
+    # Success still flushes.
+    result, flush, exc = _drive_deploy(async_task=True)
+    assert exc is None and result is True
+    assert flush.await_count == 1, "the success path must still flush"
+
+    # Both propagating classes flush on the way out.
+    for err in (BackendTimeoutError("idle"), BackendTransportError("drop")):
+        _, flush, exc = _drive_deploy(
+            drive=AsyncMock(side_effect=err), async_task=True
+        )
+        assert isinstance(exc, type(err)), f"{type(err).__name__} should propagate"
+        assert flush.await_count == 1, (
+            f"{type(err).__name__} left buffered output stranded under a dead task_id"
+        )
+
+    # async_task=False has nothing buffered, so it must not flush.
+    _, flush, _ = _drive_deploy(async_task=False)
+    assert flush.await_count == 0
+
+
+def test_deploy_task_agents_forwards_reset_capture():
+    """The branch's capture reset has to actually reach the stream driver.
+
+    _branch_reset is built in the fan-out and threaded through
+    deploy_task_agents into drive_backend_stream. Unit tests cover the
+    driver honouring the callback, but nothing covered the wiring, so a
+    mis-thread would have been invisible.
+    """
+    seen = {}
+
+    async def _drive(**kwargs):
+        seen.update(kwargs)
+
+    async def _reset():
+        pass  # pragma: no cover - identity is what is asserted
+
+    _drive_deploy(drive=_drive, reset_capture=_reset)
+    assert seen.get("reset_capture") is _reset, (
+        "reset_capture did not reach drive_backend_stream; a retry there "
+        "would leave a failed attempt's tool results in the sink"
     )
