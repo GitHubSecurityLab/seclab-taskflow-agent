@@ -293,6 +293,95 @@ def test_invalid_reasoning_effort_raises_at_runtime():
         asyncio.run(_run())
 
 
+# -- sampling parameters --
+
+
+def test_sampling_params_go_in_extra_body_not_top_level():
+    """temperature/top_p must be sent via extra_body, never as top-level kwargs.
+
+    anthropic >=1 removed the sampling parameters from the messages.stream()
+    signature, so naming them directly is a TypeError against the real SDK.
+    extra_body is merged into the request JSON as-is, which keeps them working
+    on CAPI's /v1/messages (which still honours them).
+    """
+    import asyncio
+
+    from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
+
+    captured: dict = {}
+    handle = _AnthropicHandle(
+        client=_make_fake_client(captured),
+        system_prompt="",
+        model="claude-opus-4.7",
+        max_tokens=100,
+        tools=[],
+        mcp_server_map={},
+        model_settings={"temperature": 0.2, "top_p": 0.9},
+    )
+    backend = AnthropicSDKBackend()
+
+    async def _run():
+        async for _ in backend.run_streamed(handle, "hi", max_turns=1):
+            pass
+
+    asyncio.run(_run())
+    for param in ("temperature", "top_p", "top_k"):
+        assert param not in captured, (
+            f"{param} must not be a top-level kwarg -- anthropic>=1 raises "
+            f"TypeError for it, got {captured.get(param)!r}"
+        )
+    assert captured["extra_body"] == {"temperature": 0.2, "top_p": 0.9}
+
+
+def test_sampling_params_absent_when_unset():
+    """With no sampling settings, no extra_body is sent at all."""
+    import asyncio
+
+    from seclab_taskflow_agent.sdk.anthropic_sdk.backend import _AnthropicHandle
+
+    captured: dict = {}
+    handle = _AnthropicHandle(
+        client=_make_fake_client(captured),
+        system_prompt="",
+        model="claude-opus-4.7",
+        max_tokens=100,
+        tools=[],
+        mcp_server_map={},
+        model_settings={},
+    )
+    backend = AnthropicSDKBackend()
+
+    async def _run():
+        async for _ in backend.run_streamed(handle, "hi", max_turns=1):
+            pass
+
+    asyncio.run(_run())
+    assert "extra_body" not in captured
+
+
+def test_installed_anthropic_rejects_sampling_kwargs():
+    """Guards the premise: the installed SDK really has dropped these.
+
+    If a future anthropic reinstates temperature/top_p on messages.stream(),
+    this fails and the extra_body indirection can be revisited.
+    """
+    import inspect
+
+    import anthropic
+
+    params = inspect.signature(anthropic.AsyncAnthropic.__init__).parameters
+    assert "api_key" in params
+    stream_params = inspect.signature(
+        anthropic.resources.messages.AsyncMessages.stream
+    ).parameters
+    for param in ("temperature", "top_p", "top_k"):
+        assert param not in stream_params, (
+            f"anthropic {anthropic.__version__} still accepts {param} on "
+            f"messages.stream(); the extra_body workaround may be unnecessary"
+        )
+    assert "extra_body" in stream_params
+
+
 # -- prompt caching --
 
 

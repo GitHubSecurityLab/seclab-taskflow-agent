@@ -38,7 +38,7 @@ classifiers = [
 dependencies = [
   "aiofiles==24.1.0",
   "annotated-types==0.7.0",
-  "anthropic>=0.50,<1",
+  "anthropic>=2,<3",
   "anyio==4.14.2",
   "attrs==25.3.0",
   "Authlib==1.6.12",

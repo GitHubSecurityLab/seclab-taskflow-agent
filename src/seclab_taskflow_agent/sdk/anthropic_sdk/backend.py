@@ -214,13 +214,23 @@ class AnthropicSDKBackend:
         # Build optional params
         create_kwargs: dict[str, Any] = {}
 
-        # Pass through temperature/top_p if set
+        # Pass through temperature/top_p if set.
+        #
+        # anthropic >=1 dropped these from the ``messages.stream()`` signature
+        # (API version 2026-10-21 removed the sampling parameters), so naming
+        # them as keyword arguments is a TypeError. ``extra_body`` is merged
+        # into the request JSON as-is, which keeps them working on endpoints
+        # that still accept them -- CAPI's /v1/messages honours both under
+        # 2026-10-21, while api.anthropic.com rejects them with a 400.
+        sampling: dict[str, Any] = {}
         temperature = handle.model_settings.get("temperature")
         if temperature is not None:
-            create_kwargs["temperature"] = float(temperature)
+            sampling["temperature"] = float(temperature)
         top_p = handle.model_settings.get("top_p")
         if top_p is not None:
-            create_kwargs["top_p"] = float(top_p)
+            sampling["top_p"] = float(top_p)
+        if sampling:
+            create_kwargs["extra_body"] = sampling
 
         reasoning = handle.model_settings.get("reasoning")
         if isinstance(reasoning, dict):
