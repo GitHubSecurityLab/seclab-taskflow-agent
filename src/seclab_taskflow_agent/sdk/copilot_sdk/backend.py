@@ -24,8 +24,14 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+from .._transport import TRANSIENT_TRANSPORT_ERRORS
 from ..base import AgentSpec, StreamEvent, TextDelta, TokenUsage, ToolEnd
-from ..errors import BackendBadRequestError, BackendCapabilityError, BackendUnexpectedError
+from ..errors import (
+    BackendBadRequestError,
+    BackendCapabilityError,
+    BackendTransportError,
+    BackendUnexpectedError,
+)
 from .mcp import build_mcp_config
 from .permissions import build_permission_handler
 
@@ -259,6 +265,19 @@ class CopilotSDKBackend:
                     )
                 elif etype == SessionEventType.SESSION_IDLE:
                     return
+        except TRANSIENT_TRANSPORT_ERRORS as exc:
+            # The event queue is fed by a background task driving the SDK's
+            # session, so a connection that dies mid-turn can surface here
+            # as a raw httpx error rather than a SESSION_ERROR event. Those
+            # are in neither the SDK's hierarchy nor the builtins', so
+            # without this they escape untranslated and the branch retry
+            # never sees them.
+            #
+            # A transport failure the SDK has already turned into a
+            # SESSION_ERROR still arrives as BackendUnexpectedError above
+            # and is not retried; distinguishing those would mean matching
+            # on message text, which is not worth the fragility.
+            raise BackendTransportError(str(exc)) from exc
         finally:
             # If the consumer abandoned the iterator (idle-timeout, error,
             # caller break) the session may still be mid-turn. Abort so the
