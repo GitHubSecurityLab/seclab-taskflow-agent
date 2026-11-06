@@ -335,7 +335,7 @@ def test_run_streamed_translates_transport_failure_on_send():
             super().__init__()
             self.aborted = False
 
-        async def send(self, prompt: str) -> str:
+        async def send(self, prompt: str) -> str:  # noqa: ARG002
             raise httpx.ReadError("connection died during send")
 
         async def abort(self) -> None:
