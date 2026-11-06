@@ -927,22 +927,36 @@ class TestAggregateFanin:
         ]
 
 
-# --- transient HTTP failures are retriable --------------------------------
+# --- the retriable set is neutral, not transport-aware -------------------
 
-def test_transient_http_errors_are_classified_retriable():
-    """The task retry is documented as covering "network/API errors", but no
-    httpx transport exception inherits from the builtin ConnectionError or
-    TimeoutError, so none of them reached it.
+def test_retriable_set_contains_no_sdk_or_transport_types():
+    """The runner must not learn about httpx.
 
-    httpx.RemoteProtocolError is
-    ProtocolError -> TransportError -> RequestError -> HTTPError -> Exception,
-    which meant a response stream cut mid-body failed the whole task on the
-    first occurrence instead of being retried.
+    sdk/errors.py states the contract: adapters translate their SDK-native
+    exceptions into the neutral hierarchy so the runner can apply retry
+    policy without importing any SDK. An earlier version of this fix matched
+    httpx types here instead, which inverted that and also missed the second
+    backend entirely, since each adapter has to be fixed on its own.
     """
+    import seclab_taskflow_agent.runner as runner_mod
+    from seclab_taskflow_agent.runner import _RETRIABLE_BACKEND_ERRORS
+    from seclab_taskflow_agent.sdk.errors import BackendTimeoutError
+
+    assert BackendTimeoutError in _RETRIABLE_BACKEND_ERRORS
+    for exc in _RETRIABLE_BACKEND_ERRORS:
+        assert exc.__module__ in ("builtins", "seclab_taskflow_agent.sdk.errors"), (
+            f"{exc.__module__}.{exc.__name__} leaks transport detail into the runner"
+        )
+    assert not hasattr(runner_mod, "httpx")
+    assert not hasattr(runner_mod, "httpcore")
+
+
+def test_transient_transport_errors_are_classified_retriable():
+    """The adapters' translation set, which is where transport lives now."""
     import httpcore
     import httpx
 
-    from seclab_taskflow_agent.runner import _TRANSIENT_HTTP_ERRORS
+    from seclab_taskflow_agent.sdk._transport import TRANSIENT_TRANSPORT_ERRORS
 
     for exc in (
         httpx.RemoteProtocolError,
@@ -954,22 +968,24 @@ def test_transient_http_errors_are_classified_retriable():
         httpx.ReadError,
         httpx.WriteError,
     ):
-        assert issubclass(exc, _TRANSIENT_HTTP_ERRORS), exc.__name__
-        # The point of the change: none of these were caught before.
+        assert issubclass(exc, TRANSIENT_TRANSPORT_ERRORS), exc.__name__
+        # The point of the change: none of these reached the runner before,
+        # and none of them are caught by the neutral builtins either.
         assert not issubclass(exc, (ConnectionError, TimeoutError)), exc.__name__
 
 
-def test_deterministic_http_errors_are_not_retried():
+def test_deterministic_transport_errors_are_not_retried():
     """Retrying these just repeats the same failure three times with backoff.
     LocalProtocolError means the request we built is malformed, and
-    UnsupportedProtocol is a fixed property of the URL.
+    UnsupportedProtocol is a fixed property of the URL. This is why the set
+    is enumerated instead of catching httpx.TransportError wholesale.
     """
     import httpx
 
-    from seclab_taskflow_agent.runner import _TRANSIENT_HTTP_ERRORS
+    from seclab_taskflow_agent.sdk._transport import TRANSIENT_TRANSPORT_ERRORS
 
     for exc in (httpx.LocalProtocolError, httpx.UnsupportedProtocol):
-        assert not issubclass(exc, _TRANSIENT_HTTP_ERRORS), exc.__name__
+        assert not issubclass(exc, TRANSIENT_TRANSPORT_ERRORS), exc.__name__
 
 
 # --- transport retries happen per branch ----------------------------------
@@ -980,16 +996,15 @@ def test_a_concurrent_branch_retries_its_transport_failure():
     task-level retry never sees it. Retrying inside the branch is the only
     level that reaches this path.
     """
-    import httpx
-
     from seclab_taskflow_agent.runner import _fan_out_deploys
+    from seclab_taskflow_agent.sdk.errors import BackendTimeoutError
 
     calls: list[int] = []
 
     async def deploy(payload, model):
         calls.append(payload)
         if len([c for c in calls if c == payload]) == 1:
-            raise httpx.RemoteProtocolError("peer closed connection")
+            raise BackendTimeoutError("peer closed connection")
         return True
 
     with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):
@@ -1007,16 +1022,15 @@ def test_a_retried_branch_does_not_replay_its_siblings():
     earlier one has already written to an external system. Retrying per
     branch keeps completed siblings untouched.
     """
-    import httpx
-
     from seclab_taskflow_agent.runner import _fan_out_deploys
+    from seclab_taskflow_agent.sdk.errors import BackendTimeoutError
 
     calls: list[int] = []
 
     async def deploy(payload, model):
         calls.append(payload)
         if payload == 2 and calls.count(2) == 1:
-            raise httpx.RemoteProtocolError("peer closed connection")
+            raise BackendTimeoutError("peer closed connection")
         return True
 
     with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):
@@ -1031,17 +1045,20 @@ def test_a_retried_branch_does_not_replay_its_siblings():
 
 
 def test_a_deterministic_branch_error_is_not_retried():
-    import httpx
-
+    """Retrying a malformed request just repeats the same failure with
+    backoff. The adapters map a 4xx to BackendBadRequestError precisely so
+    it stays outside the retriable set.
+    """
     from seclab_taskflow_agent.runner import _fan_out_deploys
+    from seclab_taskflow_agent.sdk.errors import BackendBadRequestError
 
     calls: list[int] = []
 
     async def deploy(payload, model):
         calls.append(payload)
-        raise httpx.LocalProtocolError("malformed request")
+        raise BackendBadRequestError("malformed request")
 
-    with pytest.raises(httpx.LocalProtocolError):
+    with pytest.raises(BackendBadRequestError):
         asyncio.run(_fan_out_deploys(
             [(1, MagicMock())], deploy,
             concurrent=False, concurrency=1, completion_policy="all",
@@ -1057,12 +1074,11 @@ def test_a_failed_attempts_tool_result_does_not_survive_the_retry():
     even though the attempt failed, and projection records every sink entry
     into the shared store.
     """
-    import httpx
-
     from seclab_taskflow_agent.results import ToolResult
     from seclab_taskflow_agent.runner import (
         _Branch, _branch_result_source, _fan_out_deploys,
     )
+    from seclab_taskflow_agent.sdk.errors import BackendTimeoutError
 
     branch = _Branch(agents={}, prompt="p", rm=MagicMock(), item_index=0, label="b")
     attempts: list[int] = []
@@ -1072,7 +1088,7 @@ def test_a_failed_attempts_tool_result_does_not_survive_the_retry():
         payload.sink.append(ToolResult(text=f"attempt-{len(attempts)}"))
         if len(attempts) == 1:
             payload.message = "partial"
-            raise httpx.RemoteProtocolError("peer closed connection")
+            raise BackendTimeoutError("peer closed connection")
         return True
 
     with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):

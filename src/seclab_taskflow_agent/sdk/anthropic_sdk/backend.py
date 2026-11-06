@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from .._transport import TRANSIENT_TRANSPORT_ERRORS
 from ..base import AgentSpec, StreamEvent, TextDelta, TokenUsage, ToolEnd
 from ..errors import (
     BackendBadRequestError,
@@ -294,6 +295,14 @@ class AnthropicSDKBackend:
             except anthropic.RateLimitError as exc:
                 raise BackendRateLimitError(str(exc)) from exc
             except anthropic.APITimeoutError as exc:
+                raise BackendTimeoutError(str(exc)) from exc
+            except TRANSIENT_TRANSPORT_ERRORS as exc:
+                # A stream cut mid-body never becomes APIConnectionError:
+                # _base_client wraps httpx only around the send() call, and
+                # with stream=True that returns at the response headers
+                # while the body is iterated here. Without this the raw
+                # httpx error falls past every clause below, since none of
+                # them are in its MRO.
                 raise BackendTimeoutError(str(exc)) from exc
             except anthropic.APIStatusError as exc:
                 # Map all 4xx (auth, permission, not_found, conflict,

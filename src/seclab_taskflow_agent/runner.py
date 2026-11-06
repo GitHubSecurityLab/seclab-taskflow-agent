@@ -28,8 +28,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import jinja2
-import httpcore
-import httpx
 from jsonschema.exceptions import ValidationError
 
 from ._stream import drive_backend_stream
@@ -72,33 +70,24 @@ TASK_RETRY_BACKOFF = 10  # Initial backoff in seconds between task retries
 
 # Transient failures a retry can reasonably clear.
 #
-# The task retry below is documented as retrying "network/API errors", but it
-# caught none of the ones raised by the HTTP stack actually in use: no httpx
-# transport exception inherits from the builtin ConnectionError or
-# TimeoutError. httpx.RemoteProtocolError, for instance, is
-# ProtocolError -> TransportError -> RequestError -> HTTPError -> Exception,
-# so a response stream cut mid-body was never retried at any level.
+# Neutral types only. The transport exceptions that actually caused this --
+# a response stream cut mid-body -- are translated into BackendTimeoutError
+# by the backend adapters, which is where SDK and transport knowledge
+# belongs (see sdk/errors.py and sdk/_transport.py). The runner matches the
+# neutral hierarchy so it needs no SDK or httpx import of its own.
+#
+# The builtins are kept because non-backend awaitables in a branch can still
+# raise them directly; no httpx exception inherits from either, which is why
+# they were never sufficient on their own.
 #
 # These are applied per branch in _deploy_with_transport_retry rather than
 # around the whole task, for two reasons: the concurrent fan-out converts
 # branch exceptions to False before the task loop can see them, and a
 # task-level replay would re-execute branches that already succeeded.
-#
-# Enumerated rather than catching httpx.TransportError wholesale, because two
-# of its children are not transient: LocalProtocolError means we built a bad
-# request, and UnsupportedProtocol is deterministic. Retrying either just
-# repeats the same failure three times with backoff.
-_TRANSIENT_HTTP_ERRORS: tuple[type[BaseException], ...] = tuple(
-    exc for exc in (
-        getattr(httpx, "TimeoutException", None),     # read/connect/pool/write timeouts
-        getattr(httpx, "NetworkError", None),         # connect/read/write/close errors
-        getattr(httpx, "RemoteProtocolError", None),  # peer closed mid-response
-        getattr(httpx, "ProxyError", None),
-        getattr(httpcore, "TimeoutException", None),
-        getattr(httpcore, "NetworkError", None),
-        getattr(httpcore, "RemoteProtocolError", None),
-        getattr(httpcore, "ProxyError", None),
-    ) if exc is not None
+_RETRIABLE_BACKEND_ERRORS: tuple[type[BaseException], ...] = (
+    BackendTimeoutError,
+    ConnectionError,
+    TimeoutError,
 )
 
 
@@ -537,7 +526,7 @@ async def _deploy_with_transport_retry(
             return await deploy(payload, model)
         except (KeyboardInterrupt, SystemExit):
             raise
-        except _TRANSIENT_HTTP_ERRORS as exc:
+        except _RETRIABLE_BACKEND_ERRORS as exc:
             remaining = TASK_RETRY_LIMIT - attempt - 1
             if remaining <= 0:
                 logging.error(
@@ -1392,7 +1381,7 @@ async def run_main(
                         break
                     except (KeyboardInterrupt, SystemExit):
                         raise
-                    except (BackendTimeoutError, ConnectionError, TimeoutError) as exc:
+                    except _RETRIABLE_BACKEND_ERRORS as exc:
                         last_task_error = exc
                         remaining = TASK_RETRY_LIMIT - attempt - 1
                         if remaining > 0:

@@ -182,12 +182,26 @@ def _make_timeout() -> APITimeoutError:
     return APITimeoutError(request=httpx.Request("POST", "https://example.test"))
 
 
+def _make_transport_drop():
+    """A stream cut mid-body.
+
+    The SDK only wraps httpx around the request, so with streaming this
+    escapes raw rather than as APIConnectionError. It is in neither
+    AgentsException's hierarchy nor the builtins', so before the adapter
+    translated it, it fell past every clause and failed the task unretried.
+    """
+    import httpx
+
+    return httpx.RemoteProtocolError("peer closed connection")
+
+
 @pytest.mark.parametrize(
     ("raw_exc_factory", "neutral_cls"),
     [
         (_make_timeout, errors.BackendTimeoutError),
         (_make_rate_limit, errors.BackendRateLimitError),
         (_make_bad_request, errors.BackendBadRequestError),
+        (_make_transport_drop, errors.BackendTimeoutError),
     ],
 )
 def test_run_streamed_translates_openai_errors(backend, raw_exc_factory, neutral_cls):
