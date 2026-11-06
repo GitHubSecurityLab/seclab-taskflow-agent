@@ -1391,3 +1391,72 @@ def test_single_personality_path_survives_both_transient_classes():
                 "a dropped connection on the -p path rendered nothing, so the "
                 "user would see only a traceback"
             )
+
+
+def test_every_installed_httpx_family_is_covered():
+    """Covering only `httpx` let a real audit die unretried.
+
+    Some environments ship both httpx/httpcore and httpx2/httpcore2, and
+    their exception classes are unrelated:
+    `httpx.RemoteProtocolError is httpx2.RemoteProtocolError` is False.
+    A long-running task failed on httpx2.RemoteProtocolError while the
+    transient tuple listed only the httpx one, so the adapters never
+    translated it, the branch retry never saw it, and the work was lost.
+
+    Derived from what is installed rather than hardcoded, so adding a
+    family to the image without adding it here fails rather than silently
+    going uncovered.
+    """
+    import importlib
+
+    from seclab_taskflow_agent.sdk._transport import TRANSIENT_TRANSPORT_ERRORS
+
+    # Deliberately NOT _transport.TRANSPORT_MODULES. Deriving the list from
+    # the same constant the fix uses makes this test self-referential:
+    # narrowing both together passes, which is exactly the bug it exists to
+    # catch. Checked by narrowing the source constant and confirming this
+    # fails.
+    candidates = ("httpx", "httpx2", "httpcore", "httpcore2")
+
+    seen = 0
+    for module_name in candidates:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        seen += 1
+        for name in ("RemoteProtocolError", "TimeoutException", "NetworkError"):
+            exc = getattr(module, name, None)
+            if exc is None:
+                continue
+            assert issubclass(exc, TRANSIENT_TRANSPORT_ERRORS), (
+                f"{module_name}.{name} is installed but not translated; a "
+                f"stream cut mid-body would escape the branch retry"
+            )
+
+    assert seen, "no httpx family importable; the tuple would be empty"
+
+
+def test_deterministic_transport_errors_excluded_in_every_family():
+    """Retrying these repeats the same failure with backoff.
+
+    LocalProtocolError means the request we built is malformed, and
+    UnsupportedProtocol is a fixed property of the URL. The widened
+    enumeration must not have swept them in.
+    """
+    import importlib
+
+    from seclab_taskflow_agent.sdk._transport import TRANSIENT_TRANSPORT_ERRORS
+
+    for module_name in ("httpx", "httpx2", "httpcore", "httpcore2"):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        for name in ("LocalProtocolError", "UnsupportedProtocol"):
+            exc = getattr(module, name, None)
+            if exc is None:
+                continue
+            assert not issubclass(exc, TRANSIENT_TRANSPORT_ERRORS), (
+                f"{module_name}.{name} is deterministic and must not retry"
+            )
