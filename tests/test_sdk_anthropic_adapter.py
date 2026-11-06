@@ -382,6 +382,61 @@ def test_installed_anthropic_rejects_sampling_kwargs():
     assert "extra_body" in stream_params
 
 
+def _captured_client_kwargs(monkeypatch, spec):
+    """Run build() with AsyncAnthropic stubbed, returning its constructor kwargs."""
+    import asyncio
+
+    import anthropic
+
+    captured: dict = {}
+
+    class _StubClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setenv("AI_API_TOKEN", "t0ken")
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _StubClient)
+    asyncio.run(AnthropicSDKBackend().build(spec))
+    return captured
+
+
+def test_sampling_pins_api_version_on_native_endpoint(monkeypatch):
+    """A native Anthropic endpoint must still accept temperature/top_p.
+
+    anthropic >=1 defaults to an API version that rejects the sampling
+    parameters with a 400, so a native configuration that sets them would
+    break mid-stream on the SDK bump. build() pins the client back to a
+    version that accepts them; constructor default_headers take precedence
+    over the SDK's own anthropic-version.
+    """
+    spec = _spec(
+        endpoint="https://api.anthropic.com",
+        model_settings={"temperature": 0.2},
+    )
+    kwargs = _captured_client_kwargs(monkeypatch, spec)
+    assert kwargs["default_headers"]["anthropic-version"] == "2023-06-01"
+
+
+def test_sampling_pins_api_version_on_capi(monkeypatch):
+    """The pin applies on CAPI too, so behaviour does not vary by endpoint."""
+    spec = _spec(
+        endpoint="https://api.githubcopilot.com",
+        model_settings={"top_p": 0.9},
+    )
+    kwargs = _captured_client_kwargs(monkeypatch, spec)
+    assert kwargs["default_headers"]["anthropic-version"] == "2023-06-01"
+
+
+def test_no_version_pin_without_sampling_params(monkeypatch):
+    """Without sampling params the SDK's current API version is left alone."""
+    spec = _spec(
+        endpoint="https://api.githubcopilot.com",
+        model_settings={"reasoning": {"effort": "high"}},
+    )
+    kwargs = _captured_client_kwargs(monkeypatch, spec)
+    assert "anthropic-version" not in (kwargs["default_headers"] or {})
+
+
 # -- prompt caching --
 
 

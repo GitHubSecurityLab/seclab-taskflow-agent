@@ -40,6 +40,15 @@ logger = logging.getLogger(__name__)
 
 _VALID_REASONING = ("low", "medium", "high", "max")
 
+# Sampling parameters (temperature/top_p/top_k) were removed in Anthropic API
+# version 2026-10-21, which the SDK sends by default from v1 onward.  Endpoints
+# differ in how strictly they enforce that: CAPI's /v1/messages still honours
+# the parameters under either version, while api.anthropic.com returns 400 for
+# them under the newer one.  When a caller actually asks for sampling, the
+# client is pinned to the last version that accepts it everywhere.
+_SAMPLING_PARAMS = ("temperature", "top_p")
+_SAMPLING_API_VERSION = "2023-06-01"
+
 
 def _mcp_tools_to_anthropic(tools: list[Any]) -> list[dict[str, Any]]:
     """Convert MCP tool definitions to Anthropic tool format."""
@@ -140,6 +149,13 @@ class AnthropicSDKBackend:
         if provider.bearer_auth:
             headers["Authorization"] = f"Bearer {token}"
 
+        # Pin the API version when sampling parameters are requested, so they
+        # keep working on strict endpoints instead of failing with a 400
+        # mid-stream.  ``default_headers`` wins over the version the SDK would
+        # otherwise send: the client merges ``_custom_headers`` last.
+        if any(spec.model_settings.get(name) is not None for name in _SAMPLING_PARAMS):
+            headers["anthropic-version"] = _SAMPLING_API_VERSION
+
         client = anthropic.AsyncAnthropic(
             api_key="placeholder" if provider.bearer_auth else token,
             base_url=endpoint,
@@ -216,19 +232,15 @@ class AnthropicSDKBackend:
 
         # Pass through temperature/top_p if set.
         #
-        # anthropic >=1 dropped these from the ``messages.stream()`` signature
-        # (API version 2026-10-21 removed the sampling parameters), so naming
-        # them as keyword arguments is a TypeError. ``extra_body`` is merged
-        # into the request JSON as-is, which keeps them working on endpoints
-        # that still accept them -- CAPI's /v1/messages honours both under
-        # 2026-10-21, while api.anthropic.com rejects them with a 400.
+        # anthropic >=1 dropped these from the ``messages.stream()`` signature,
+        # so naming them as keyword arguments is a TypeError.  ``extra_body``
+        # is merged into the request JSON as-is.  ``build()`` has already
+        # pinned the client to an API version that still accepts them.
         sampling: dict[str, Any] = {}
-        temperature = handle.model_settings.get("temperature")
-        if temperature is not None:
-            sampling["temperature"] = float(temperature)
-        top_p = handle.model_settings.get("top_p")
-        if top_p is not None:
-            sampling["top_p"] = float(top_p)
+        for name in _SAMPLING_PARAMS:
+            value = handle.model_settings.get(name)
+            if value is not None:
+                sampling[name] = float(value)
         if sampling:
             create_kwargs["extra_body"] = sampling
 
