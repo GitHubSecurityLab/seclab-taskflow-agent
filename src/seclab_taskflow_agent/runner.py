@@ -65,7 +65,7 @@ DEFAULT_MAX_TURNS = 50  # Maximum agent turns before forced termination
 RATE_LIMIT_BACKOFF = 5  # Initial backoff in seconds after a rate-limit response
 MAX_RATE_LIMIT_BACKOFF = 120  # Maximum backoff cap in seconds for rate-limit retries
 TASK_RETRY_LIMIT = 3  # Maximum retry attempts for a failed branch
-TASK_RETRY_BACKOFF = 10  # Initial backoff in seconds between task retries
+TASK_RETRY_BACKOFF = 10  # Initial backoff in seconds between branch retries
 
 # Retried once, at the branch, and nowhere else.
 #
@@ -543,6 +543,13 @@ async def _deploy_with_transport_retry(
                 )
                 raise
             backoff = TASK_RETRY_BACKOFF * (attempt + 1)
+            # Rendered, not just logged. The task-level loop this replaced
+            # told the operator it was retrying; without this a long audit
+            # would silently pause for the backoff with nothing on screen.
+            await render_model_output(
+                f"** 🤖🔄 Branch failed: {exc}\n"
+                f"** 🤖🔄 Retrying in {backoff}s ({remaining} attempts left)\n"
+            )
             logging.warning(
                 "Branch attempt %s failed (%s); retrying in %ss (%s left)",
                 attempt + 1, exc, backoff, remaining,

@@ -1089,7 +1089,11 @@ def test_a_concurrent_branch_retries_its_transport_failure():
                 raise _exc("peer closed connection")
             return True
 
-        with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):
+        render = AsyncMock()
+        with (
+            patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()),
+            patch("seclab_taskflow_agent.runner.render_model_output", new=render),
+        ):
             ok = asyncio.run(_fan_out_deploys(
                 [(1, MagicMock())], deploy,
                 concurrent=True, concurrency=2, completion_policy="all",
@@ -1098,6 +1102,13 @@ def test_a_concurrent_branch_retries_its_transport_failure():
         assert ok is True, f"{exc_cls.__name__} was not retried"
         assert calls == [1, 1], (
             f"{exc_cls.__name__} should have been retried once, got {calls}"
+        )
+        # The task-level loop this replaced told the operator it was
+        # retrying. Logging alone would leave a long audit sitting through
+        # the backoff with nothing on screen.
+        rendered = " ".join(str(c.args[0]) for c in render.await_args_list if c.args)
+        assert "Retrying in" in rendered, (
+            f"{exc_cls.__name__} retry was not surfaced to the operator"
         )
 
 
