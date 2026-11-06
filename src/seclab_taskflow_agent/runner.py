@@ -944,12 +944,19 @@ async def deploy_task_agents(
             # simply did not complete.
             raise
 
-        if async_task:
-            await flush_async_output(task_id, label=stream_label)
-
         return complete
 
     finally:
+        # Flush here rather than on the success path alone, so that every
+        # exit releases this attempt's buffered output. task_id is unique
+        # per call, so an attempt that propagates -- the re-raised timeout
+        # above, or BackendTransportError and the builtins, which have no
+        # handler here -- would otherwise strand its partial response and
+        # its own diagnostic in the router under an id no later attempt
+        # knows. OutputRouter.flush pops the buffer and no-ops when it is
+        # absent, so this is safe on the paths that already returned.
+        if async_task:
+            await flush_async_output(task_id, label=stream_label)
         watchdog_ping()
         if agent_handle is not None:
             try:

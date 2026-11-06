@@ -1231,3 +1231,36 @@ def test_deploy_task_agents_does_not_swallow_timeouts():
         assert not re.search(r"^\s+raise\s*$", by_class[cls], re.MULTILINE), (
             f"{cls} is deterministic and should not be retried"
         )
+
+
+def test_deploy_task_agents_flushes_buffered_output_on_every_exit():
+    """Buffered async output must be released even when the attempt raises.
+
+    task_id is a fresh uuid per call, so an attempt that propagates strands
+    its partial response and its own timeout diagnostic in the router under
+    an id no later attempt knows. That affects the re-raised
+    BackendTimeoutError and also BackendTransportError, ConnectionError and
+    TimeoutError, none of which have a handler here at all.
+
+    Asserted on the source for the same reason as the handler guard above:
+    reaching this code needs the MCP session machinery stood up. What is
+    pinned is that the flush lives in the finally, not only on the path
+    that returns.
+    """
+    import importlib
+    import inspect
+
+    runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
+    src = inspect.getsource(runner_mod.deploy_task_agents)
+
+    head, _, finally_block = src.partition("\n    finally:")
+    assert finally_block, "deploy_task_agents has no outer finally"
+
+    assert "flush_async_output" in finally_block, (
+        "flush_async_output must run in the finally; an attempt that raises "
+        "would otherwise strand its buffered output under a dead task_id"
+    )
+    assert "flush_async_output" not in head, (
+        "the success-path flush is redundant now that the finally covers "
+        "every exit, and two call sites invite them drifting apart"
+    )
