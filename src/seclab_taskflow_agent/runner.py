@@ -519,28 +519,26 @@ async def _deploy_with_transport_retry(
     the task-level ``except`` never sees it. Transport failures in that path
     were previously not retried at any level.
     """
-    last_error: BaseException | None = None
     for attempt in range(TASK_RETRY_LIMIT):
         try:
             return await deploy(payload, model)
         except (KeyboardInterrupt, SystemExit):
             raise
         except _TRANSIENT_HTTP_ERRORS as exc:
-            last_error = exc
             remaining = TASK_RETRY_LIMIT - attempt - 1
             if remaining <= 0:
                 logging.error(
                     "Branch failed after %s attempts: %s", TASK_RETRY_LIMIT, exc
                 )
-                break
+                raise
             backoff = TASK_RETRY_BACKOFF * (attempt + 1)
             logging.warning(
                 "Branch attempt %s failed (%s); retrying in %ss (%s left)",
                 attempt + 1, exc, backoff, remaining,
             )
             await asyncio.sleep(backoff)
-    assert last_error is not None
-    raise last_error
+    # TASK_RETRY_LIMIT is >= 1, so the loop always returns or re-raises.
+    raise RuntimeError("transport retry loop exited without a result")
 
 
 async def _fan_out_deploys(
