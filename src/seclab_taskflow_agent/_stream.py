@@ -69,12 +69,12 @@ async def drive_backend_stream(
     run_hooks: Any,
     async_task: bool,
     task_id: str,
-    max_api_retry: int,
     initial_rate_limit_backoff: int,
     max_rate_limit_backoff: int,
     record_tool_result: Any = None,
     record_usage: Any = None,
     record_message: Any = None,
+    reset_capture: Any = None,
 ) -> None:
     """Run the backend's event stream to completion with retry/backoff.
 
@@ -82,10 +82,25 @@ async def drive_backend_stream(
     :func:`handle_tool_end_event` (which records a neutral
     :class:`~seclab_taskflow_agent.results.ToolResult` via
     *record_tool_result*), logs and forwards ``TokenUsage`` events to
-    *record_usage*, retries up to *max_api_retry* times on
-    :class:`BackendTimeoutError`, and applies exponential backoff up to
+    *record_usage*, and applies exponential backoff up to
     *max_rate_limit_backoff* seconds on :class:`BackendRateLimitError`
     before giving up with a :class:`BackendTimeoutError`.
+
+    This function does **not** retry :class:`BackendTimeoutError`. It used
+    to, which was wrong on two counts. It cannot reset what a failed attempt
+    already recorded -- ``record_tool_result`` has fired for every
+    ``ToolEnd`` seen before the failure -- so each in-place attempt appended
+    another copy, and a value from a failed attempt could become the task's
+    named output because ``_final_result`` reads ``sink[-1]``. It is also
+    nested inside the branch and task retry loops, so a class caught here as
+    well multiplied rather than added: the sequential path measured
+    ``6 x 3 x 3 = 54`` full agent turns, each replaying the whole
+    conversation. Retry is owned by ``_deploy_with_transport_retry``, the
+    only level that resets capture state and replays just the failed branch.
+
+    *reset_capture*, when provided, is awaited before each retried attempt
+    so the rate-limit path above cannot leave a partial attempt's results
+    behind either. It is not called before the first attempt.
 
     When *record_message* is provided, the agent's final response text is
     forwarded to it once the stream completes successfully. "Final response"
@@ -95,11 +110,17 @@ async def drive_backend_stream(
     whole answer. This is what ``capture: response`` tasks store as their named
     output.
     """
-    max_retry = max_api_retry
     rate_limit_backoff = initial_rate_limit_backoff
     last_rate_limit_exc: BackendRateLimitError | None = None
+    attempted = False
 
     while rate_limit_backoff:
+        # Discard anything a previous attempt recorded before it failed, so
+        # a retried attempt cannot leave duplicates in the shared store or
+        # let its last tool result become the task's named output.
+        if attempted and reset_capture is not None:
+            await reset_capture()
+        attempted = True
         # Accumulate the agent's final response text per attempt (reset on a
         # retry, and on each tool call, so we keep only the prose after the
         # last tool result -- the model's final answer).
@@ -156,11 +177,6 @@ async def drive_backend_stream(
             if record_message is not None:
                 await record_message("".join(final_message_parts))
             return
-        except BackendTimeoutError:
-            if not max_retry:
-                logging.exception("Max retries for BackendTimeoutError reached")
-                raise
-            max_retry -= 1
         except BackendRateLimitError as exc:
             last_rate_limit_exc = exc
             if rate_limit_backoff == max_rate_limit_backoff:

@@ -927,9 +927,9 @@ class TestAggregateFanin:
         ]
 
 
-# --- the retriable set is neutral, not transport-aware -------------------
+# --- the branch is the sole owner of transient retry ----------------------
 
-def test_retriable_set_contains_no_sdk_or_transport_types():
+def test_branch_retriable_set_contains_no_sdk_or_transport_types():
     """The runner must not learn about httpx.
 
     sdk/errors.py states the contract: adapters translate their SDK-native
@@ -945,11 +945,10 @@ def test_retriable_set_contains_no_sdk_or_transport_types():
     )
 
     branch_set = runner_mod._BRANCH_RETRIABLE_ERRORS
-    task_set = runner_mod._RETRIABLE_BACKEND_ERRORS
 
     assert BackendTransportError in branch_set
-    assert BackendTimeoutError in task_set
-    for exc in (*branch_set, *task_set):
+    assert BackendTimeoutError in branch_set
+    for exc in branch_set:
         assert exc.__module__ in ("builtins", "seclab_taskflow_agent.sdk.errors"), (
             f"{exc.__module__}.{exc.__name__} leaks transport detail into the runner"
         )
@@ -957,34 +956,72 @@ def test_retriable_set_contains_no_sdk_or_transport_types():
     assert not hasattr(runner_mod, "httpcore")
 
 
-def test_the_two_retry_levels_share_no_exception_class():
-    """Three retry loops are nested: drive_backend_stream retries in place,
-    the branch loop wraps that, and the task loop wraps the fan-out. A class
-    caught by more than one multiplies instead of adding -- the sequential
-    path measures 6 x 3 x 3 = 54 full agent turns for a class all three
-    accept, each one replaying the whole conversation.
+def test_no_second_retry_level_exists_in_the_runner():
+    """Retry loops nest, so a class caught at two levels multiplies rather
+    than adds. When drive_backend_stream retried BackendTimeoutError in
+    place and the task loop retried it again, the sequential path measured
+    6 x 3 x 3 = 54 full agent turns, each replaying the whole conversation.
 
-    So the branch set and the task set must stay disjoint, and nothing in
-    the branch set may be caught by the stream loop.
+    The task-level retriable set is gone on purpose: retrying there rebuilds
+    the whole fan-out and re-runs branches that already succeeded, which for
+    a repeat_prompt task means repeating external writes.
     """
-    from seclab_taskflow_agent.runner import (
-        _BRANCH_RETRIABLE_ERRORS,
-        _RETRIABLE_BACKEND_ERRORS,
-    )
-    from seclab_taskflow_agent.sdk.errors import BackendTimeoutError
+    import seclab_taskflow_agent.runner as runner_mod
 
-    for branch_exc in _BRANCH_RETRIABLE_ERRORS:
-        for task_exc in _RETRIABLE_BACKEND_ERRORS:
-            assert not issubclass(branch_exc, task_exc), (
-                f"{branch_exc.__name__} is retried at both levels, "
-                f"so attempts multiply"
+    assert not hasattr(runner_mod, "_RETRIABLE_BACKEND_ERRORS"), (
+        "a second retriable set reintroduces multiplication; the branch "
+        "is the only level that resets capture state and spares siblings"
+    )
+
+
+def test_the_stream_loop_retries_nothing_the_branch_retries():
+    """Retry loops nest, so a class caught at two levels multiplies rather
+    than adds -- the sequential path measured 6 x 3 x 3 = 54 full agent
+    turns when drive_backend_stream and the task loop both accepted
+    BackendTimeoutError.
+
+    Driven through the real stream driver rather than asserted on the class
+    hierarchy, because what matters is whether it retries, not how the
+    exceptions are related.
+    """
+    import asyncio
+
+    from seclab_taskflow_agent._stream import drive_backend_stream
+    from seclab_taskflow_agent.runner import _BRANCH_RETRIABLE_ERRORS
+
+    for exc_cls in _BRANCH_RETRIABLE_ERRORS:
+        calls = {"n": 0}
+
+        class _Backend:
+            def run_streamed(self, handle, prompt, *, max_turns):  # noqa: ARG002
+                calls["n"] += 1
+
+                async def gen():
+                    raise exc_cls("boom")
+                    yield  # pragma: no cover - unreachable, makes this a generator
+
+                return gen()
+
+        async def _run():
+            await drive_backend_stream(
+                backend_impl=_Backend(), agent_handle=None, prompt="p",
+                max_turns=1, run_hooks=None, async_task=False, task_id="t",
+                initial_rate_limit_backoff=1, max_rate_limit_backoff=4,
             )
-        # drive_backend_stream retries BackendTimeoutError in place, without
-        # resetting capture state. Nothing retried at the branch may be
-        # caught there too.
-        assert not issubclass(branch_exc, BackendTimeoutError), (
-            f"{branch_exc.__name__} would also be retried inside "
-            f"drive_backend_stream, duplicating recorded tool results"
+
+        # Not pytest.raises(exc_cls): the driver converts a bare TimeoutError
+        # into BackendTimeoutError via its idle-stream handler, since
+        # asyncio.TimeoutError is the builtin on 3.11+. What is under test is
+        # that it does not retry, whatever comes out.
+        with (
+            patch("seclab_taskflow_agent._stream.render_model_output", new=AsyncMock()),
+            pytest.raises(Exception),  # noqa: B017, PT011
+        ):
+            asyncio.run(_run())
+
+        assert calls["n"] == 1, (
+            f"{exc_cls.__name__} is retried by drive_backend_stream as well "
+            f"as the branch, so attempts multiply"
         )
 
 
