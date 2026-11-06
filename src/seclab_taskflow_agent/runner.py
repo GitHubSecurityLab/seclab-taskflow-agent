@@ -518,8 +518,21 @@ async def _deploy_with_transport_retry(
     branch exception into ``False``, so ``run_prompts`` returns normally and
     the task-level ``except`` never sees it. Transport failures in that path
     were previously not retried at any level.
+
+    Capture state is reset between attempts. A ``_Branch`` is reused across
+    them and its tool-result callbacks append to a mutable ``sink``, so an
+    attempt that records a result and then loses its stream would otherwise
+    leave that value behind: ``_final_result`` reads ``sink[-1]``, so it
+    could become the task's named output even though the attempt failed, and
+    projection records every entry into the shared store. Only the attempt
+    that succeeds should be able to publish anything.
     """
     for attempt in range(TASK_RETRY_LIMIT):
+        if attempt and isinstance(payload, _Branch):
+            payload.sink.clear()
+            payload.message = None
+            payload.output = None
+            payload.output_set = False
         try:
             return await deploy(payload, model)
         except (KeyboardInterrupt, SystemExit):

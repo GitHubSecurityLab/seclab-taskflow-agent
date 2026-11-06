@@ -1047,3 +1047,43 @@ def test_a_deterministic_branch_error_is_not_retried():
             concurrent=False, concurrency=1, completion_policy="all",
         ))
     assert calls == [1], "a deterministic failure should be attempted once"
+
+
+def test_a_failed_attempts_tool_result_does_not_survive_the_retry():
+    """A _Branch is reused across attempts and its tool-result callbacks
+    append to a mutable sink. Without resetting between attempts, an attempt
+    that records a result and then loses its stream leaves that value behind:
+    _final_result reads sink[-1], so it could become the task's named output
+    even though the attempt failed, and projection records every sink entry
+    into the shared store.
+    """
+    import httpx
+
+    from seclab_taskflow_agent.results import ToolResult
+    from seclab_taskflow_agent.runner import (
+        _Branch, _branch_result_source, _fan_out_deploys,
+    )
+
+    branch = _Branch(agents={}, prompt="p", rm=MagicMock(), item_index=0, label="b")
+    attempts: list[int] = []
+
+    async def deploy(payload, model):
+        attempts.append(len(attempts))
+        payload.sink.append(ToolResult(text=f"attempt-{len(attempts)}"))
+        if len(attempts) == 1:
+            payload.message = "partial"
+            raise httpx.RemoteProtocolError("peer closed connection")
+        return True
+
+    with patch("seclab_taskflow_agent.runner.asyncio.sleep", new=AsyncMock()):
+        ok = asyncio.run(_fan_out_deploys(
+            [(branch, branch.rm)], deploy,
+            concurrent=False, concurrency=1, completion_policy="all",
+        ))
+
+    assert ok is True
+    assert len(attempts) == 2
+    # Only the successful attempt's result may be published.
+    assert [tr.text for tr in branch.sink] == ["attempt-2"]
+    assert _branch_result_source(branch, capture_response=False).text == "attempt-2"
+    assert branch.message is None
