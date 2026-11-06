@@ -949,7 +949,7 @@ def test_branch_retriable_set_contains_no_sdk_or_transport_types():
     # reached through `from seclab_taskflow_agent.runner import ...` in this
     # file and mixing the two forms is a CodeQL finding.
     runner_mod = importlib.import_module("seclab_taskflow_agent.runner")
-    branch_set = runner_mod._BRANCH_RETRIABLE_ERRORS
+    branch_set = runner_mod._BRANCH_RETRIABLE_ERRORS  # noqa: SLF001 - asserting on internals is the point
 
     assert BackendTransportError in branch_set
     assert BackendTimeoutError in branch_set
@@ -1303,7 +1303,8 @@ def test_deploy_task_agents_flushes_buffered_output_on_every_exit():
 
     # Success still flushes.
     result, flush, exc = _drive_deploy(async_task=True)
-    assert exc is None and result is True
+    assert exc is None
+    assert result is True
     assert flush.await_count == 1, "the success path must still flush"
 
     # Both propagating classes flush on the way out.
