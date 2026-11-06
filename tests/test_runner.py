@@ -939,18 +939,17 @@ def test_retriable_set_contains_no_sdk_or_transport_types():
     backend entirely, since each adapter has to be fixed on its own.
     """
     import seclab_taskflow_agent.runner as runner_mod
-    from seclab_taskflow_agent.runner import (
-        _BRANCH_RETRIABLE_ERRORS,
-        _RETRIABLE_BACKEND_ERRORS,
-    )
     from seclab_taskflow_agent.sdk.errors import (
         BackendTimeoutError,
         BackendTransportError,
     )
 
-    assert BackendTransportError in _BRANCH_RETRIABLE_ERRORS
-    assert BackendTimeoutError in _RETRIABLE_BACKEND_ERRORS
-    for exc in (*_BRANCH_RETRIABLE_ERRORS, *_RETRIABLE_BACKEND_ERRORS):
+    branch_set = runner_mod._BRANCH_RETRIABLE_ERRORS
+    task_set = runner_mod._RETRIABLE_BACKEND_ERRORS
+
+    assert BackendTransportError in branch_set
+    assert BackendTimeoutError in task_set
+    for exc in (*branch_set, *task_set):
         assert exc.__module__ in ("builtins", "seclab_taskflow_agent.sdk.errors"), (
             f"{exc.__module__}.{exc.__name__} leaks transport detail into the runner"
         )

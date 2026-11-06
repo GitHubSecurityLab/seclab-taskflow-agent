@@ -295,7 +295,6 @@ def test_drive_backend_stream_does_not_retry_transport_errors():
     Retry for a dropped stream belongs to _deploy_with_transport_retry,
     which does reset capture state and replays only the failed branch.
     """
-    import asyncio
     from unittest.mock import AsyncMock, patch
 
     from seclab_taskflow_agent._stream import drive_backend_stream
