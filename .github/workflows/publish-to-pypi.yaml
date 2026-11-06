@@ -68,7 +68,7 @@ jobs:
         subject-path: ./dist/*
 
     - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@v1.14.2 # immutable release
+      uses: pypa/gh-action-pypi-publish@v1.14.3 # immutable release
       with:
         verbose: true
 
